@@ -1,0 +1,11 @@
+qelectrotech-0.100.0+git8539-x86-win64-readytouse/
+.env/
+dist/
+build/
+*.exe
+*.pkgdist/
+build/
+
+.history/
+.vscode/
+venv/
