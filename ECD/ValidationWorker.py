@@ -8,15 +8,40 @@ class ValidationWorker(QThread):
     validationComplete = Signal(str, bool)  # message, has_issues
     findingsReady = Signal(list)  
 
-    def __init__(self, prompt: str, mermaid_code: str, complexity: str = "Standard"):
+    def __init__(self, prompt: str, parsed_data: dict, complexity: str = "Standard"):
         super().__init__()
         self.prompt = prompt
-        self.mermaid_code = mermaid_code
+        self.parsed_data = parsed_data
         self.complexity = complexity
 
 
     def run(self):
         try:
+            # 1. Physical local netlist validation
+            netlist_ok = True
+            physical_errors = []
+            try:
+                try:
+                    from ECD.pin_model import compute_component_positions, generate_netlist, validate_netlist
+                except ImportError:
+                    from pin_model import compute_component_positions, generate_netlist, validate_netlist
+                
+                box_pos = compute_component_positions(self.parsed_data)
+                netlist = generate_netlist(self.parsed_data, box_pos)
+                netlist_ok, physical_errors = validate_netlist(netlist)
+            except Exception as pe:
+                # If physical parsing/layout itself crashes, that's a major issue!
+                netlist_ok = False
+                physical_errors = [f"Physical layout error: {pe}"]
+
+            # Generate Mermaid code dynamically for LLM semantic validation
+            try:
+                from ECD.mermaid_generator import MermaidGenerator
+            except ImportError:
+                from mermaid_generator import MermaidGenerator
+            self.mermaid_code = MermaidGenerator().generate_mermaid_code(self.parsed_data)
+
+            # 2. Semantic LLM validation (Ollama)
             complexity = self.complexity
             complexity_context = {
                 "Simple": """COMPLEXITY: Simple mode is intentionally minimal.
@@ -74,33 +99,55 @@ FINDINGS:
 
 Be concise. Only flag real problems."""
 
-            payload = {
-                "model": "mistral:7b-instruct",
-                "prompt": f"{system_prompt.strip()}\n\nUSER PROMPT:\n{self.prompt}\n\nMERMAID CODE:\n{self.mermaid_code}",
-                "stream": False,
-                "options": {
-                    "temperature": 0.1,
-                    "num_predict": 512,
-                    "num_ctx": 4096,
+            llm_findings = []
+            try:
+                payload = {
+                    "model": "mistral:7b-instruct",
+                    "prompt": f"{system_prompt.strip()}\n\nUSER PROMPT:\n{self.prompt}\n\nMERMAID CODE:\n{self.mermaid_code}",
+                    "stream": False,
+                    "options": {
+                        "temperature": 0.1,
+                        "num_predict": 512,
+                        "num_ctx": 4096,
+                    }
                 }
-            }
-            response = requests.post("http://localhost:11434/api/generate", json=payload, timeout=60)
-            response.raise_for_status()
-            text = response.json().get("response", "").strip()
-            text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
+                response = requests.post("http://localhost:11434/api/generate", json=payload, timeout=60)
+                response.raise_for_status()
+                text = response.json().get("response", "").strip()
+                text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
+                
+                is_ok = "STATUS: OK" in text or "STATUS:OK" in text
+                findings_block = text.split("FINDINGS:")[-1].strip() if "FINDINGS:" in text else ""
+                if is_ok:
+                    llm_findings = []
+                else:
+                    llm_findings = [
+                        line.lstrip("- ").strip()
+                        for line in findings_block.splitlines()
+                        if line.strip() and line.strip() != "None"
+                    ]
+            except Exception as e:
+                # LLM server offline or failed, that's okay, we proceed with physical findings
+                pass
 
-            has_issues = "ISSUES_FOUND" in text
-            self.validationComplete.emit(text, has_issues)
-            findings_block = text.split("FINDINGS:")[-1].strip() if "FINDINGS:" in text else ""
-            findings_list = [
-                line.lstrip("- ").strip()
-                for line in findings_block.splitlines()
-                if line.strip() and line.strip() != "None"
-            ]
-            if has_issues and findings_list:
-                self.findingsReady.emit(findings_list)
+            # 3. Merge findings
+            all_findings = []
+            if not netlist_ok:
+                all_findings.extend(physical_errors)
+            all_findings.extend(llm_findings)
+
+            has_issues = len(all_findings) > 0
+            
+            # Format combined output response
+            status_line = "STATUS: ISSUES_FOUND" if has_issues else "STATUS: OK"
+            findings_bullet = "\n".join(f"- {f}" for f in all_findings) if all_findings else "None"
+            response_text = f"{status_line}\nFINDINGS:\n{findings_bullet}"
+            
+            self.validationComplete.emit(response_text, has_issues)
+            if has_issues and all_findings:
+                self.findingsReady.emit(all_findings)
         except Exception as e:
-            self.validationComplete.emit(f"Validation unavailable: {e}", False)
+            self.validationComplete.emit(f"Validation error: {e}", True)
 
 
 class MermaidFixWorker(QThread):
@@ -302,6 +349,7 @@ class ValidationPanel(QWidget):
         self.hide()
 
     def _build_ui(self):
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(8, 6, 8, 6)
         lay.setSpacing(4)
@@ -346,9 +394,13 @@ class ValidationPanel(QWidget):
 
         self.setStyleSheet("""
             ValidationPanel {
-                border: 1px solid #fed7aa;
+                border: 1px solid #93c5fd;
                 border-radius: 6px;
-                background: #fff7ed;
+                background: #bfdbfe;
+            }
+            QLabel {
+                color: #1a202c;
+                background: transparent;
             }
         """)
         self.setMaximumHeight(140)
@@ -362,7 +414,10 @@ class ValidationPanel(QWidget):
         self.fixRequested.emit()
 
     def show_loading(self):
-        self.setStyleSheet("ValidationPanel{border:1px solid #bee3f8;border-radius:6px;background:#ebf8ff;}")
+        self.setStyleSheet("""
+            ValidationPanel { border:1px solid #93c5fd; border-radius:6px; background:#bfdbfe; }
+            QLabel { color:#1a202c; background:transparent; }
+        """)
         self.icon_lbl.setText("🔍")
         self.title_lbl.setText("Validating diagram against prompt…")
         self.findings_lbl.setText("")
@@ -372,35 +427,39 @@ class ValidationPanel(QWidget):
 
     def show_fixing(self):
         """Called when MermaidFixWorker starts — disables Fix button, shows progress."""
-        self.setStyleSheet("ValidationPanel{border:1px solid #fbd38d;border-radius:6px;background:#fffbeb;}")
-        self.icon_lbl.setText("🔧")
-        self.title_lbl.setText("Applying fixes…")
-        self.title_lbl.setStyleSheet("color:#b7791f;")
-        self.findings_lbl.setText("LLM is patching the diagram. This may take a few seconds.")
+        self.setStyleSheet("""
+            ValidationPanel { border:1px solid #93c5fd; border-radius:6px; background:#bfdbfe; }
+            QLabel { color:#1a202c; background:transparent; }
+        """)
+        self.icon_lbl.setText("⏳")
+        self.title_lbl.setText("Applying fixes via LLM…")
+        self.findings_lbl.setText("The local LLM is patching the diagram structure. This normally takes 10–15 seconds. Please wait.")
         self.fix_btn.setEnabled(False)
         self.show()
 
     def show_fix_error(self, error_msg: str):
         """Called when MermaidFixWorker fails."""
-        self.setStyleSheet("ValidationPanel{border:1px solid #feb2b2;border-radius:6px;background:#fff5f5;}")
+        self.setStyleSheet("""
+            ValidationPanel { border:1px solid #93c5fd; border-radius:6px; background:#bfdbfe; }
+            QLabel { color:#1a202c; background:transparent; }
+        """)
         self.icon_lbl.setText("❌")
         self.title_lbl.setText("Fix failed")
-        self.title_lbl.setStyleSheet("color:#c53030;")
         self.findings_lbl.setText(f"Could not apply fix: {error_msg[:200]}")
         self.fix_btn.setEnabled(bool(self._current_findings))  # re-enable so user can retry
         self.show()
 
     def show_result(self, text: str, has_issues: bool):
+        self.setStyleSheet("""
+            ValidationPanel { border:1px solid #93c5fd; border-radius:6px; background:#bfdbfe; }
+            QLabel { color:#1a202c; background:transparent; }
+        """)
         if has_issues:
-            self.setStyleSheet("ValidationPanel{border:1px solid #feb2b2;border-radius:6px;background:#fff5f5;}")
             self.icon_lbl.setText("⚠️")
             self.title_lbl.setText("Potential issues found")
-            self.title_lbl.setStyleSheet("color:#c53030;")
         else:
-            self.setStyleSheet("ValidationPanel{border:1px solid #9ae6b4;border-radius:6px;background:#f0fff4;}")
             self.icon_lbl.setText("✅")
             self.title_lbl.setText("Diagram looks good")
-            self.title_lbl.setStyleSheet("color:#276749;")
             self.fix_btn.setEnabled(False)
 
         findings = ""

@@ -1,5 +1,5 @@
 """
-dxf_exporter.py
+dxf_exporter_old.py
 ================
 Exports the electrical distribution diagram parsed_data to a DXF file
 using the ezdxf library.
@@ -370,14 +370,21 @@ def export_dxf(parsed_data: dict, output_path: str) -> None:
         bx, by = box_positions[cid]
         return (bx, _cy(by))
 
-    for edge in parsed_data.get("edges", []):
-        if edge.src not in box_positions or edge.dst not in box_positions:
-            continue
-        p1 = bot_mid(edge.src)
-        p2 = top_mid(edge.dst)
+    # ── Draw phase wire trunk (list-order proxy, no edge data) ──────────────
+    # NOTE: parsed_data has no edge/connection data — same limitation as
+    # check_structural_rules() in diagram_canvas.py, which uses list-order
+    # as a topology proxy for RCD/maincb ordering. This trunk draw makes the
+    # same assumption: components are connected top-to-bottom in the order
+    # they appear in parsed_data["components"]. If parsed_data ever gains
+    # real connection data, both this and check_structural_rules() should
+    # be upgraded together.
+    ordered_ids = [cid for cid, _ in parsed_data.get("components", []) if cid in box_positions]
+
+    for src, dst in zip(ordered_ids, ordered_ids[1:]):
+        p1 = bot_mid(src)
+        p2 = top_mid(dst)
         _draw_wire(msp, [p1, p2], color=COL_PHASE, layer="WIRES_PHASE")
 
-        # Wire label midpoint
         lx = p1[0] + 3
         ly = (p1[1] + p2[1]) / 2
         if language == "ja":

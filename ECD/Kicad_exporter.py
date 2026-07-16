@@ -334,7 +334,7 @@ def _symbol_tracked(instances: List[_InstRecord],
 # ---------------------------------------------------------------------------
 # Build schematic body
 # ---------------------------------------------------------------------------
-_VALID_CIDS = {"supply_L", "supply_N", "supply_PE", "maincb", "outcb", "load"}
+_VALID_CIDS = {"supply_L", "supply_N", "supply_PE", "maincb", "rcd", "outcb", "load"}
 
 
 def _build_schematic(components: List[Tuple[str, str]],
@@ -375,8 +375,23 @@ def _build_schematic(components: List[Tuple[str, str]],
                      ("supply_PE", "PE"))
     maincb    = next(((c, l) for c, l in components if c == "maincb"),
                      ("maincb",    "Main MCB 2P 63A"))
+    rcd       = next(((c, l) for c, l in components if c == "rcd"), None)
     outcbs    = [(c, l) for c, l in components if c == "outcb"]
     loads     = [(c, l) for c, l in components if c == "load"]
+
+    has_rcd   = rcd is not None
+    if has_rcd:
+        rcd_x = 120.0
+        bus_x = 160.0
+        subcb_x = 200.0
+        load_x = 260.0
+        annotation_x = 188.0
+    else:
+        rcd_x = 0.0
+        bus_x = 120.0
+        subcb_x = 160.0
+        load_x = 220.0
+        annotation_x = 148.0
 
     if not outcbs and loads:
         raise ValueError(
@@ -430,22 +445,55 @@ def _build_schematic(components: List[Tuple[str, str]],
     parts.append(_wire(supply_right,   SUPPLY_N_Y, maincb_Nin_x, SUPPLY_N_Y))
     parts.append(_wire(maincb_Nin_x,   SUPPLY_N_Y, maincb_Nin_x, maincb_Nin_y))
 
-    # ── Live bus vertical rail ─────────────────────────────────────────────
-    # Horizontal stub: MCB L_OUT → bus X
-    parts.append(_wire(maincb_Lout_x, maincb_Lout_y, BUS_X, maincb_Lout_y))
+    # ── Live bus / RCD wiring ──────────────────────────────────────────────
+    if has_rcd:
+        parts.append(_symbol_tracked(
+            instances,
+            "MCB_2P", "U1", rcd[1],
+            rcd_x, MAINCB_Y,
+            ref_dx=0, ref_dy=-10,
+            val_dx=0, val_dy=10,
+        ))
+        
+        # Pin coordinates for rcd
+        rcd_Lin_x  = rcd_x - MAINCB_PIN_OFF
+        rcd_Lin_y  = MAINCB_Y - MAINCB_ROW_OFF
+        rcd_Nin_x  = rcd_x - MAINCB_PIN_OFF
+        rcd_Nin_y  = MAINCB_Y + MAINCB_ROW_OFF
+        rcd_Lout_x = rcd_x + MAINCB_PIN_OFF
+        rcd_Lout_y = MAINCB_Y - MAINCB_ROW_OFF
+        rcd_Nout_x = rcd_x + MAINCB_PIN_OFF
+        rcd_Nout_y = MAINCB_Y + MAINCB_ROW_OFF
+
+        # MCB L_OUT / N_OUT -> RCD L_IN / N_IN
+        parts.append(_wire(maincb_Lout_x, maincb_Lout_y, rcd_Lin_x, rcd_Lin_y))
+        parts.append(_wire(maincb_Nout_x, maincb_Nout_y, rcd_Nin_x, rcd_Nin_y))
+
+        # RCD L_OUT → Live busbar
+        parts.append(_wire(rcd_Lout_x, rcd_Lout_y, bus_x, rcd_Lout_y))
+        
+        # RCD N_OUT → net label N
+        n_label_x = rcd_Nout_x + 5
+        parts.append(_wire(rcd_Nout_x, rcd_Nout_y, n_label_x, rcd_Nout_y))
+        parts.append(_label("N", n_label_x, rcd_Nout_y))
+        n_label_y = rcd_Nout_y
+    else:
+        # MCB L_OUT → Live busbar
+        parts.append(_wire(maincb_Lout_x, maincb_Lout_y, bus_x, maincb_Lout_y))
+        
+        # MCB N_OUT → net label N
+        n_label_x = maincb_Nout_x + 5
+        parts.append(_wire(maincb_Nout_x, maincb_Nout_y, n_label_x, maincb_Nout_y))
+        parts.append(_label("N", n_label_x, maincb_Nout_y))
+        n_label_y = maincb_Nout_y
 
     if n_branches > 0:
         # Vertical connector from MCB level down to first branch
-        parts.append(_wire(BUS_X, maincb_Lout_y, BUS_X, branch_ys[0]))
+        parts.append(_wire(bus_x, maincb_Lout_y, bus_x, branch_ys[0]))
 
         # Vertical bus spanning all branches
         if n_branches > 1:
-            parts.append(_wire(BUS_X, branch_ys[0], BUS_X, branch_ys[-1]))
-
-    # ── N_OUT from main MCB → net label ───────────────────────────────────
-    n_label_x = maincb_Nout_x + 5
-    parts.append(_wire(maincb_Nout_x, maincb_Nout_y, n_label_x, maincb_Nout_y))
-    parts.append(_label("N", n_label_x, maincb_Nout_y))
+            parts.append(_wire(bus_x, branch_ys[0], bus_x, branch_ys[-1]))
 
     # ── PE supply → net label ─────────────────────────────────────────────
     pe_label_x = supply_right + 5
@@ -461,27 +509,27 @@ def _build_schematic(components: List[Tuple[str, str]],
 
         # Junction on bus rail (only when it's a T-junction, i.e. >1 branch)
         if n_branches > 1:
-            parts.append(_junction(BUS_X, by))
+            parts.append(_junction(bus_x, by))
 
-        subcb_Lin_x  = SUBCB_X - SUBCB_PIN_OFF
-        subcb_Lout_x = SUBCB_X + SUBCB_PIN_OFF
+        subcb_Lin_x  = subcb_x - SUBCB_PIN_OFF
+        subcb_Lout_x = subcb_x + SUBCB_PIN_OFF
 
         # Bus → sub-MCB input
-        parts.append(_wire(BUS_X, by, subcb_Lin_x, by))
+        parts.append(_wire(bus_x, by, subcb_Lin_x, by))
 
         # Sub-MCB symbol
         cb_label = outcbs[i][1] if i < len(outcbs) else f"MCB {i + 1}"
         parts.append(_symbol_tracked(
             instances,
             "MCB_1P", f"Q{ref_q}", cb_label,
-            SUBCB_X, by,
+            subcb_x, by,
             ref_dx=0, ref_dy=-8,
             val_dx=0, val_dy=8,
         ))
         ref_q += 1
 
         # Connector pin coordinates
-        conn_L_x  = LOAD_X - CONN_PIN_OFF
+        conn_L_x  = load_x - CONN_PIN_OFF
         conn_L_y  = by + CONN_ROW_OFF
         conn_N_y  = by
         conn_PE_y = by - CONN_ROW_OFF
@@ -495,7 +543,7 @@ def _build_schematic(components: List[Tuple[str, str]],
         parts.append(_symbol_tracked(
             instances,
             "CONN_3P", f"J{ref_j}", ld_label,
-            LOAD_X, by,
+            load_x, by,
             ref_dx=4, ref_dy=-7,
             val_dx=4, val_dy=7,
             val_justify="left",
@@ -508,15 +556,15 @@ def _build_schematic(components: List[Tuple[str, str]],
 
     # ── Annotation text ───────────────────────────────────────────────────
     parts.append(_text("230V AC Single-Phase Distribution Board",
-                       148, 28, size=4.5, bold=True))
+                       annotation_x, 28, size=4.5, bold=True))
     parts.append(_text("Incoming Supply",
                        SUPPLY_X, 55, size=2.2, bold=True))
     parts.append(_text(voltage,
                        SUPPLY_X, 59, size=1.8))
     parts.append(_text("Live Bus",
-                       BUS_X + 3, FIRST_BRANCH_Y - 8, size=1.8))
+                       bus_x + 3, FIRST_BRANCH_Y - 8, size=1.8))
     parts.append(_text("Neutral Bar",
-                       n_label_x, maincb_Nout_y + 4, size=1.8))
+                       n_label_x, n_label_y + 4, size=1.8))
     parts.append(_text("Earth Bar",
                        pe_label_x, SUPPLY_PE_Y + 4, size=1.8))
 
@@ -692,13 +740,9 @@ def normalize_components(parsed_data: dict) -> List[Tuple[str, str]]:
         if cid in ("bus", "nbar", "ebar"):
             continue
 
-        # ── RCD / RCBO — no KiCad symbol, warn and absorb ─────────────────
+        # ── RCD / RCBO ────────────────────────────────────────────────────
         if cid in ("rcd", "rcbo"):
-            warnings.warn(
-                f"Component {cid!r} ({label!r}) has no KiCad symbol defined in "
-                "this exporter — it appears in the Mermaid diagram only and will "
-                "be omitted from the .kicad_sch file."
-            )
+            normalized.append(("rcd", label))
             continue
 
         # ── outcb_1 … outcb_N  (Test2.py LLM output) ─────────────────────
@@ -748,6 +792,17 @@ def normalize_components(parsed_data: dict) -> List[Tuple[str, str]]:
             continue
 
         warnings.warn(f"Unrecognized component type {cid!r} — skipped")
+
+    # ── If loads are missing or insufficient, auto-generate them to match outcbs ──
+    if len(pending_loads) < len(pending_outcbs):
+        needed = len(pending_outcbs) - len(pending_loads)
+        clean_lbl = "Load Circuits"
+        for item in raw:
+            if item[0] == "loads":
+                clean_lbl = re.sub(r'<br\s*/?>', ' ', str(item[1])).strip()
+                break
+        for _ in range(needed):
+            pending_loads.append(("load", clean_lbl))
 
     # ── Interleave outcbs and loads: outcb, load, outcb, load, … ─────────
     # Zip to the shorter list; any extras are appended unmatched so the

@@ -1,18 +1,355 @@
 # diagram_canvas.py
 import json
+import re
 from PySide6.QtWidgets import *
 from PySide6.QtCore import *
-from PySide6.QtWebEngineWidgets import *
-from PySide6.QtWebChannel import *
-# from PySide6.QtWebEngineCore import QWebEngineSettings
 import os
 
-from mermaid_generator import MermaidGenerator
-from ollama_client import OllamaClient, GenerationWorker
-from web_bridge import WebBridge
-from element_editor import ElementEditorDialog
-from constants import COMPLEXITY_LEVELS
-from ValidationWorker import ValidationWorker, ValidationPanel, MermaidFixWorker
+from PySide6.QtSvg import QSvgRenderer
+from PySide6.QtGui import QPainter
+
+class SvgPreviewWidget(QWidget):
+    """Renders an SVG scaled to fit the widget, preserving aspect ratio.
+    scale_factor is a zoom multiplier on top of the fit-to-view base.
+    At scale_factor=1.0 the entire SVG is visible.  When zoomed in
+    beyond 1.0, DiagramCanvas resizes the widget explicitly so that
+    scrollbars appear in the parent QScrollArea.
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.renderer = QSvgRenderer()
+        self.scale_factor = 1.0
+
+    def load(self, byte_array: QByteArray) -> bool:
+        res = self.renderer.load(byte_array)
+        self.scale_factor = 1.0
+        self.updateGeometry()
+        self.update()
+        return res
+
+    def set_scale(self, scale: float):
+        self.scale_factor = max(0.2, min(scale, 5.0))
+        self.updateGeometry()
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        if not self.renderer.isValid():
+            return
+        sz = self.renderer.defaultSize()
+        if sz.isEmpty() or self.width() == 0 or self.height() == 0:
+            return
+
+        # Scale SVG to fit widget bounds, preserving aspect ratio
+        scale = min(self.width() / sz.width(), self.height() / sz.height())
+        w = int(sz.width() * scale)
+        h = int(sz.height() * scale)
+
+        # Center in widget
+        x = (self.width() - w) // 2
+        y = (self.height() - h) // 2
+
+        self.renderer.render(painter, QRect(x, y, w, h))
+
+class WelcomeWidget(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setStyleSheet("""
+            WelcomeWidget {
+                background-color: #f0f4f8;
+            }
+            #card {
+                background-color: #ffffff;
+                border-radius: 16px;
+                border: 1px solid #e2e8f0;
+            }
+            #title {
+                font-family: 'Segoe UI', Arial, sans-serif;
+                font-size: 24px;
+                font-weight: 800;
+                color: #2c5282;
+            }
+            #subtitle {
+                font-family: 'Segoe UI', Arial, sans-serif;
+                font-size: 13px;
+                color: #718096;
+            }
+            #icon {
+                font-size: 40px;
+            }
+            .step-num {
+                background-color: #ebf4ff;
+                color: #2c5282;
+                border-radius: 12px;
+                font-weight: bold;
+                font-size: 13px;
+                min-width: 24px;
+                max-width: 24px;
+                min-height: 24px;
+                max-height: 24px;
+            }
+            .step-txt {
+                font-family: 'Segoe UI', Arial, sans-serif;
+                font-size: 12px;
+                color: #4a5568;
+            }
+            .divider {
+                font-size: 18px;
+                color: #a0aec0;
+                font-weight: bold;
+            }
+        """)
+        
+        main_lay = QVBoxLayout(self)
+        main_lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        card = QFrame()
+        card.setObjectName("card")
+        card_lay = QVBoxLayout(card)
+        card_lay.setContentsMargins(30, 30, 30, 30)
+        card_lay.setSpacing(15)
+        card_lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        icon = QLabel("⚡")
+        icon.setObjectName("icon")
+        icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        card_lay.addWidget(icon)
+        
+        title = QLabel("Electrical Diagram Generator")
+        title.setObjectName("title")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        card_lay.addWidget(title)
+        
+        subtitle = QLabel("Describe your electrical system in plain language\nand get a professional distribution diagram instantly.")
+        subtitle.setObjectName("subtitle")
+        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        card_lay.addWidget(subtitle)
+        
+        steps_widget = QWidget()
+        steps_lay = QHBoxLayout(steps_widget)
+        steps_lay.setContentsMargins(0, 10, 0, 0)
+        steps_lay.setSpacing(10)
+        steps_lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        # Step 1
+        s1_num = QLabel("1")
+        s1_num.setProperty("class", "step-num")
+        s1_num.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        s1_txt = QLabel("Type description\nin the panel")
+        s1_txt.setProperty("class", "step-txt")
+        s1_txt.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        w1 = QWidget()
+        w1_lay = QVBoxLayout(w1)
+        w1_lay.setContentsMargins(0, 0, 0, 0)
+        w1_lay.addWidget(s1_num, alignment=Qt.AlignmentFlag.AlignCenter)
+        w1_lay.addWidget(s1_txt, alignment=Qt.AlignmentFlag.AlignCenter)
+        steps_lay.addWidget(w1)
+        
+        div1 = QLabel("→")
+        div1.setProperty("class", "divider")
+        steps_lay.addWidget(div1)
+        
+        # Step 2
+        s2_num = QLabel("2")
+        s2_num.setProperty("class", "step-num")
+        s2_num.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        s2_txt = QLabel("Choose a\ndetail level")
+        s2_txt.setProperty("class", "step-txt")
+        s2_txt.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        w2 = QWidget()
+        w2_lay = QVBoxLayout(w2)
+        w2_lay.setContentsMargins(0, 0, 0, 0)
+        w2_lay.addWidget(s2_num, alignment=Qt.AlignmentFlag.AlignCenter)
+        w2_lay.addWidget(s2_txt, alignment=Qt.AlignmentFlag.AlignCenter)
+        steps_lay.addWidget(w2)
+        
+        div2 = QLabel("→")
+        div2.setProperty("class", "divider")
+        steps_lay.addWidget(div2)
+        
+        # Step 3
+        s3_num = QLabel("3")
+        s3_num.setProperty("class", "step-num")
+        s3_num.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        s3_txt = QLabel("Press ⚡\nGenerate Diagram")
+        s3_txt.setProperty("class", "step-txt")
+        s3_txt.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        w3 = QWidget()
+        w3_lay = QVBoxLayout(w3)
+        w3_lay.setContentsMargins(0, 0, 0, 0)
+        w3_lay.addWidget(s3_num, alignment=Qt.AlignmentFlag.AlignCenter)
+        w3_lay.addWidget(s3_txt, alignment=Qt.AlignmentFlag.AlignCenter)
+        steps_lay.addWidget(w3)
+        
+        card_lay.addWidget(steps_widget)
+        main_lay.addWidget(card)
+
+class LoadingWidget(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setStyleSheet("""
+            LoadingWidget {
+                background-color: #f0f4f8;
+            }
+            #card {
+                background-color: #ffffff;
+                border-radius: 16px;
+                border: 1px solid #e2e8f0;
+            }
+            #title {
+                font-family: 'Segoe UI', Arial, sans-serif;
+                font-size: 18px;
+                font-weight: 700;
+                color: #2c5282;
+            }
+            #subtitle {
+                font-family: 'Segoe UI', Arial, sans-serif;
+                font-size: 12px;
+                color: #718096;
+            }
+            #spinner {
+                font-size: 36px;
+            }
+        """)
+        
+        main_lay = QVBoxLayout(self)
+        main_lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        card = QFrame()
+        card.setObjectName("card")
+        card_lay = QVBoxLayout(card)
+        card_lay.setContentsMargins(40, 40, 40, 40)
+        card_lay.setSpacing(15)
+        card_lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        spinner = QLabel("⏳")
+        spinner.setObjectName("spinner")
+        spinner.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        card_lay.addWidget(spinner)
+        
+        title = QLabel("Generating Diagram…")
+        title.setObjectName("title")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        card_lay.addWidget(title)
+        
+        subtitle = QLabel("Parsing your description and building the diagram.\nThis may take a few seconds.")
+        subtitle.setObjectName("subtitle")
+        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        card_lay.addWidget(subtitle)
+        
+        main_lay.addWidget(card)
+
+class CodePanel(QWidget):
+    applied = Signal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._collapsed = True
+        self.setStyleSheet("""
+            CodePanel {
+                background-color: #2d3748;
+                border-top: 2px solid #1a202c;
+            }
+            QPlainTextEdit {
+                background-color: #1a202c;
+                color: #edf2f7;
+                font-family: 'Courier New', Courier, monospace;
+                font-size: 13px;
+                border: 1px solid #4a5568;
+                border-radius: 6px;
+                padding: 6px;
+            }
+            QPushButton {
+                background-color: #3182ce;
+                color: white;
+                font-family: 'Segoe UI', Arial, sans-serif;
+                font-weight: bold;
+                font-size: 12px;
+                border: none;
+                border-radius: 6px;
+                padding: 6px 12px;
+            }
+            QPushButton:hover {
+                background-color: #2b6cb0;
+            }
+            QPushButton:pressed {
+                background-color: #2c5282;
+            }
+            #toggle_btn {
+                background-color: transparent;
+                color: #a0aec0;
+                font-size: 12px;
+                font-weight: bold;
+                padding: 4px 8px;
+                border: 1px solid #4a5568;
+                border-radius: 4px;
+            }
+            #toggle_btn:hover {
+                background-color: #4a5568;
+                color: #e2e8f0;
+            }
+            QLabel {
+                color: #cbd5e0;
+                font-family: 'Segoe UI', Arial, sans-serif;
+                font-size: 12px;
+                font-weight: bold;
+            }
+        """)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(10, 4, 10, 4)
+        lay.setSpacing(4)
+
+        # Header bar — always visible
+        hdr = QHBoxLayout()
+        self.toggle_btn = QPushButton("▶ Mermaid Code")
+        self.toggle_btn.setObjectName("toggle_btn")
+        self.toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.toggle_btn.clicked.connect(self.toggle)
+        hdr.addWidget(self.toggle_btn)
+        hdr.addStretch()
+
+        self.apply_btn = QPushButton("⚡ Apply Changes")
+        self.apply_btn.clicked.connect(self._on_apply_clicked)
+        hdr.addWidget(self.apply_btn)
+        lay.addLayout(hdr)
+
+        # Editor area — hidden by default
+        self.text_edit = QPlainTextEdit()
+        self.text_edit.setFixedHeight(220)
+        self.text_edit.setVisible(False)
+        self.apply_btn.setVisible(False)
+        lay.addWidget(self.text_edit)
+
+    def toggle(self):
+        self._collapsed = not self._collapsed
+        self.text_edit.setVisible(not self._collapsed)
+        self.apply_btn.setVisible(not self._collapsed)
+        self.toggle_btn.setText("▼ Mermaid Code" if not self._collapsed else "▶ Mermaid Code")
+
+    def set_code(self, code: str):
+        self.text_edit.setPlainText(code)
+
+    def get_code(self) -> str:
+        return self.text_edit.toPlainText()
+
+    def _on_apply_clicked(self):
+        self.applied.emit(self.get_code())
+
+try:
+    from ECD.dxf_generator import export_dxf, render_doc_to_svg, render_doc_to_png, render_doc_to_pdf
+    from ECD.mermaid_generator import MermaidGenerator
+    from ECD.llm.ollama_client import OllamaClient, GenerationWorker
+    from ECD.constants import COMPLEXITY_LEVELS
+    from ECD.ValidationWorker import ValidationWorker, ValidationPanel, MermaidFixWorker
+except ImportError:
+    from dxf_generator import export_dxf, render_doc_to_svg, render_doc_to_png, render_doc_to_pdf
+    from mermaid_generator import MermaidGenerator
+    from llm.ollama_client import OllamaClient, GenerationWorker
+    from constants import COMPLEXITY_LEVELS
+    from ValidationWorker import ValidationWorker, ValidationPanel, MermaidFixWorker
 
 class DiagramCanvas(QWidget):
     def __init__(self, parent=None):
@@ -21,12 +358,11 @@ class DiagramCanvas(QWidget):
         self.generator = MermaidGenerator()
         self.current_parsed_data = None
         self.original_parsed_data = None
-        self.web_bridge = WebBridge()
         self._current_mermaid_code = ""
+        self.current_doc = None
+        self.current_svg = ""
         self._build_ui()
-        self._setup_channel()
-        self.web_bridge.elementEdited.connect(self._on_element_edited)
-        self.web_bridge.diagramChanged.connect(self._on_diagram_text_changed)
+        self._show_welcome()
         self._last_prompt = ""
         self._validation_worker = None
         self._gen_worker = None
@@ -37,28 +373,39 @@ class DiagramCanvas(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
 
-        self.web_view = QWebEngineView()
-        self.web_view.setMinimumHeight(500)
-        self.web_bridge.elementDoubleClicked.connect(self._on_element_dblclicked)
-        lay.addWidget(self.web_view)
+        self.stacked_widget = QStackedWidget()
+        lay.addWidget(self.stacked_widget, 1)  # stretch=1: diagram gets all available space
+
+        self.welcome_widget = WelcomeWidget()
+        self.stacked_widget.addWidget(self.welcome_widget)
+
+        self.loading_widget = LoadingWidget()
+        self.stacked_widget.addWidget(self.loading_widget)
+
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.scroll_area.setStyleSheet("background-color: #ffffff; border: none;")
+
+        self.svg_widget = SvgPreviewWidget()
+        self.scroll_area.setWidget(self.svg_widget)
+        self.stacked_widget.addWidget(self.scroll_area)
+
+        # Lightweight stub — stores mermaid code for .mmd export / get_current_mermaid_code
+        # without rendering any UI.  A full interactive editor will be added in v2.
+        self.code_panel = type('_CodeStub', (), {
+            '_code': '',
+            'set_code': lambda self, c: setattr(self, '_code', c),
+            'get_code': lambda self: self._code,
+            'setVisible': lambda self, v: None,
+        })()
+
         self.validation_panel = ValidationPanel()
         lay.addWidget(self.validation_panel)
         # "Fix Issues" button in the panel triggers auto-correction using stored findings
         self.validation_panel.fixRequested.connect(
             lambda: self._on_validation_issues_found(self.validation_panel._current_findings)
         )
-
-        # Stub: code panel lives inside the WebView HTML now
-        self.code_panel = type('_Stub', (), {
-            'set_code': lambda self, c: None,
-            'get_code': lambda self: ''
-        })()
-
-    def _setup_channel(self):
-        ch = QWebChannel(self.web_view.page())
-        ch.registerObject("qtBridge", self.web_bridge)
-        self.web_view.page().setWebChannel(ch)
-        self._show_welcome()
 
     def closeEvent(self, event):
         if self._validation_worker is not None and self._validation_worker.isRunning():
@@ -68,284 +415,15 @@ class DiagramCanvas(QWidget):
         super().closeEvent(event)
 
 
-    # ── Add this method to DiagramCanvas ─────────────────────────────────────
     def _show_welcome(self):
         """Display a branded welcome screen before any diagram is generated."""
-        html = """<!DOCTYPE html>
-    <html>
-    <head>
-    <meta charset="utf-8">
-    <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body {
-        font-family: 'Segoe UI', Arial, sans-serif;
-        background: #f0f4f8;
-        height: 100vh;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-    }
-    .welcome-card {
-        text-align: center;
-        background: #ffffff;
-        border-radius: 16px;
-        padding: 56px 72px;
-        box-shadow: 0 4px 32px rgba(44,82,130,0.12);
-        max-width: 560px;
-    }
-    .icon { font-size: 64px; margin-bottom: 20px; }
-    h1 {
-        font-size: 26px;
-        font-weight: 700;
-        color: #2c5282;
-        margin-bottom: 10px;
-        letter-spacing: -0.5px;
-    }
-    .subtitle {
-        font-size: 14px;
-        color: #718096;
-        margin-bottom: 32px;
-        line-height: 1.6;
-    }
-    .steps {
-        display: flex;
-        justify-content: center;
-        gap: 24px;
-        flex-wrap: wrap;
-    }
-    .step {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        gap: 6px;
-        width: 130px;
-    }
-    .step-num {
-        background: #ebf4ff;
-        color: #2c5282;
-        font-weight: 700;
-        font-size: 13px;
-        border-radius: 50%;
-        width: 32px; height: 32px;
-        display: flex; align-items: center; justify-content: center;
-    }
-    .step-txt { font-size: 12px; color: #4a5568; text-align: center; line-height: 1.4; }
-    .divider { color: #cbd5e0; font-size: 20px; margin-top: 8px; }
-    </style>
-    </head>
-    <body>
-    <div class="welcome-card">
-    <div class="icon">⚡</div>
-    <h1>Electrical Diagram Generator</h1>
-    <p class="subtitle">
-        Describe your electrical system in plain language<br>
-        and get a professional distribution diagram instantly.
-    </p>
-    <div class="steps">
-        <div class="step">
-        <div class="step-num">1</div>
-        <div class="step-txt">Type a description in the panel</div>
-        </div>
-        <div class="divider">→</div>
-        <div class="step">
-        <div class="step-num">2</div>
-        <div class="step-txt">Choose a detail level</div>
-        </div>
-        <div class="divider">→</div>
-        <div class="step">
-        <div class="step-num">3</div>
-        <div class="step-txt">Press ⚡ Generate Diagram</div>
-        </div>
-    </div>
-    </div>
-    </body>
-    </html>"""
-        self.web_view.setHtml(html)
+        # code_panel is a no-op stub; nothing to hide
+        self.stacked_widget.setCurrentWidget(self.welcome_widget)
 
 
     def _show_loading(self):
         """Replace the canvas with an animated loading screen while generating."""
-        html = """<!DOCTYPE html>
-    <html>
-    <head>
-    <meta charset="utf-8">
-    <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body {
-        font-family: 'Segoe UI', Arial, sans-serif;
-        background: #f0f4f8;
-        height: 100vh;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-    }
-    .card {
-        text-align: center;
-        background: #ffffff;
-        border-radius: 16px;
-        padding: 56px 72px;
-        box-shadow: 0 4px 32px rgba(44,82,130,0.12);
-    }
-    .spinner {
-        width: 56px; height: 56px;
-        border: 5px solid #ebf4ff;
-        border-top-color: #2c5282;
-        border-radius: 50%;
-        animation: spin 0.9s linear infinite;
-        margin: 0 auto 24px;
-    }
-    @keyframes spin { to { transform: rotate(360deg); } }
-    h2 { font-size: 20px; color: #2c5282; font-weight: 700; margin-bottom: 8px; }
-    p  { font-size: 13px; color: #718096; }
-    </style>
-    </head>
-    <body>
-    <div class="card">
-    <div class="spinner"></div>
-    <h2>Generating Diagram…</h2>
-    <p>Parsing your description and building the diagram.<br>This may take a few seconds.</p>
-    </div>
-    </body>
-    </html>"""
-        self.web_view.setHtml(html)
-
-    def generate_from_prompt_OLD_BLOCKING(self, prompt_text, complexity_level="Neutral"):
-        try:
-            prompt_text = prompt_text.strip()
-            if not prompt_text:
-                QMessageBox.warning(self, "Empty Prompt", "Please enter a diagram description.")
-                return False
-
-            self._show_loading()
-            parsed_data = None
-
-            # ── Step 1: Parse prompt via LLM ──────────────────────────────────────
-            try:
-                ollama = OllamaClient()
-                parsed_data = ollama.prompt_to_structured_data(prompt_text, complexity_level)
-
-                if not isinstance(parsed_data, dict) or "components" not in parsed_data:
-                    raise ValueError("Invalid LLM output — missing components key")
-
-                # ── Hard safety minimum: supply and maincb must always exist ──────
-                # Normalise LLM components to clean (id, label) tuples immediately after parsing
-                parsed_data["components"] = [
-                    (c[0], c[1]) if isinstance(c, (list, tuple)) and len(c) >= 2 else (str(c), str(c))
-                    for c in parsed_data["components"]
-                ]
-                comp_ids = [c for c, _ in parsed_data["components"]]  # now safe                lang = parsed_data.get("language", "en")
-                
-                voltage = parsed_data.get("voltage", "230V / 415V")
-                if "supply" not in comp_ids:
-                    parsed_data["components"].insert(0, (
-                        "supply",
-                        self.generator.components_map["main incoming supply"][lang].replace("230V / 415V", voltage)
-                    ))
-                if "maincb" not in comp_ids:
-                    parsed_data["components"].insert(1, (
-                        "maincb",
-                        self.generator.components_map["main breaker"][lang]
-                    ))
-
-                # Only inject if prompt didn't explicitly exclude them
-                explicit_no_breaker = any(p in prompt_text.lower() for p in ["no breaker", "direct connection", "no maincb"])
-                if "supply" not in comp_ids:
-                    parsed_data["components"].insert(0, ("supply", ...))
-                if "maincb" not in comp_ids and not explicit_no_breaker:
-                    parsed_data["components"].insert(1, ("maincb", ...))
-
-                # For complexity filtering: keep anything the LLM explicitly included
-                llm_comp_ids = set(c for c, _ in parsed_data["components"])
-                if complexity_level != "Neutral":
-                    allowed_ids = set(COMPLEXITY_LEVELS[complexity_level]["components"])
-                    allow_outcb = COMPLEXITY_LEVELS[complexity_level].get("allow_outcb", False)
-                else:
-                    # Neutral = prompt-driven, accept everything the LLM returned
-                    allowed_ids = set(c for c, _ in parsed_data["components"])
-                    allow_outcb = True
-                # Components that are explicitly named in the raw prompt text
-                prompt_lower = prompt_text.lower()
-                COMPONENT_KEYWORDS = {
-                    "rcd":  ["rcd", "residual current", "rcbo", "earth fault"],
-                    "nbar": ["neutral bar", "neutral link"],
-                    "ebar": ["earth bar", "earth terminal"],
-                    "bus":  ["busbar", "bus bar", "copper bar"],
-                }
-
-                def prompt_mentions(cid):
-                    return any(kw in prompt_lower for kw in COMPONENT_KEYWORDS.get(cid, []))
-
-                parsed_data["components"] = [
-                    (c, l) for c, l in parsed_data["components"]
-                    if c in allowed_ids
-                    or (allow_outcb and c.startswith("outcb_"))
-                    or prompt_mentions(c)   # ← only survive if prompt LITERALLY says them
-                ]
-
-                # ── After line 2185: backfill complexity defaults for non-Neutral modes ──
-                if complexity_level != "Neutral":
-                    explicit_exclusions = {
-                        "rcd":  ["no rcd", "no residual", "no earth fault"],
-                        "nbar": ["no neutral"],
-                        "ebar": ["no earth", "no ground"],
-                        "bus":  ["no busbar", "no bus"],
-                        "maincb": ["no breaker", "direct connection", "no maincb"],
-                    }
-                    current_ids = {c for c, _ in parsed_data["components"]}
-                    lang = parsed_data.get("language", "en")
-                    voltage = parsed_data.get("voltage", "230V / 415V")
-                    defaults = self.generator.get_default_components(lang, voltage, complexity_level)
-                    
-                    for cid, lbl in defaults:
-                        if cid not in current_ids and not cid.startswith("outcb_"):
-                            excluded = any(ex in prompt_lower for ex in explicit_exclusions.get(cid, []))
-                            if not excluded:
-                                parsed_data["components"].append((cid, lbl))
-
-                if complexity_level == "Detailed":
-                    has_outcb = any(c.startswith("outcb_") for c, _ in parsed_data["components"])
-                    if not has_outcb:
-                        lang = parsed_data.get("language", "en")
-                        generic_label = self.generator.components_map["outgoing mcbs"][lang]
-                        parsed_data["components"].insert(-1, ("outcb_1", generic_label))
-
-                parsed_data["complexity"] = complexity_level
-                parsed_data["prompt"] = prompt_text    # ← store original prompt for generator to read
-                parsed_data["language"] = self.generator.detect_language(prompt_text)
-                print(f"Parsed via LLM ")
-
-            except Exception as llm_err:
-            
-                print(f"LLM parsing failed, using regex fallback: {llm_err}")
-                parsed_data = self.generator.parse_prompt(prompt_text, complexity_level)
-
-            self.current_parsed_data = parsed_data
-            self.original_parsed_data = parsed_data.copy()
-
-            # ── Step 2: Generate Mermaid code ─────────────────────────────────────
-            mermaid_code = self.generator.generate_mermaid_code(parsed_data)
-            self._current_mermaid_code = mermaid_code
-            self.code_panel.set_code(mermaid_code)
-
-            html = self.generator.generate_display_html(mermaid_code, parsed_data, enable_editing=True)
-            self.web_view.setHtml(html)
-
-            if self.parent_window and hasattr(self.parent_window, 'status'):
-                lang_name = "English" if parsed_data.get("language") == "en" else "Japanese"
-                self.parent_window.status.showMessage(
-                    f"Diagram generated ({lang_name}, {complexity_level}), "
-                    f"{len(parsed_data.get('components', []))} components. "
-                    "Drag boxes · Double-click text · Edit code below.", 6000)
-
-            # ── Step 3: Async validation ───────────────────────────────────────────
-            self._last_prompt = prompt_text
-            self._run_validation(prompt_text, mermaid_code)
-            return True
-
-        except Exception as e:
-            import traceback; traceback.print_exc()
-            QMessageBox.critical(self, "Generation Error", f"Failed to generate diagram:\n\n{str(e)}")
-            return False
+        self.stacked_widget.setCurrentWidget(self.loading_widget)
 
 
     # ── Async generation (non-blocking) ───────────────────────────────────────
@@ -427,10 +505,15 @@ class DiagramCanvas(QWidget):
                 allowed_ids = set(c for c, _ in parsed_data["components"])
                 allow_outcb = True
 
+            try:
+                from ECD.pin_model import get_base_type
+            except ImportError:
+                from pin_model import get_base_type
+
             parsed_data["components"] = [
                 (c, l) for c, l in parsed_data["components"]
                 if c in allowed_ids
-                or (allow_outcb and c.startswith("outcb_"))
+                or (allow_outcb and get_base_type(c) == "outcb")
                 or prompt_mentions(c)
             ]
 
@@ -446,14 +529,27 @@ class DiagramCanvas(QWidget):
                 current_ids = {c for c, _ in parsed_data["components"]}
                 defaults    = self.generator.get_default_components(lang, voltage, complexity_level)
                 for cid, lbl in defaults:
-                    if cid not in current_ids and not cid.startswith("outcb_"):
+                    if cid not in current_ids and get_base_type(cid) != "outcb":
                         if not any(ex in prompt_lower for ex in explicit_exclusions.get(cid, [])):
                             parsed_data["components"].append((cid, lbl))
 
             if complexity_level == "Detailed":
-                if not any(c.startswith("outcb_") for c, _ in parsed_data["components"]):
+                if not any(get_base_type(c) == "outcb" for c, _ in parsed_data["components"]):
                     generic_label = self.generator.components_map["outgoing mcbs"][lang]
                     parsed_data["components"].insert(-1, ("outcb_1", generic_label))
+
+            # Force inclusion of nbar/ebar/bus based on flags and outgoing breakers (critical for correctness and validation)
+            current_ids = {c for c, _ in parsed_data["components"]}
+            has_outcb = any(get_base_type(c) == "outcb" for c, _ in parsed_data["components"])
+            if parsed_data.get("flags", {}).get("show_neutral") and "nbar" not in current_ids:
+                parsed_data["components"].append(("nbar", self.generator.components_map["neutral bar"][lang]))
+                current_ids.add("nbar")
+            if parsed_data.get("flags", {}).get("show_earth") and "ebar" not in current_ids:
+                parsed_data["components"].append(("ebar", self.generator.components_map["earth bar"][lang]))
+                current_ids.add("ebar")
+            if has_outcb and "bus" not in current_ids:
+                parsed_data["components"].append(("bus", self.generator.components_map["busbar"][lang]))
+                current_ids.add("bus")
 
             parsed_data["complexity"] = complexity_level
             parsed_data["prompt"]     = prompt_text
@@ -473,9 +569,17 @@ class DiagramCanvas(QWidget):
         mermaid_code = self.generator.generate_mermaid_code(parsed_data)
         self._current_mermaid_code = mermaid_code
         self.code_panel.set_code(mermaid_code)
+        # code_panel is a no-op stub; nothing to show
 
-        html = self.generator.generate_display_html(mermaid_code, parsed_data, enable_editing=True)
-        self.web_view.setHtml(html)
+        try:
+            self.current_doc = export_dxf(parsed_data, None)
+            self.current_svg = render_doc_to_svg(self.current_doc)
+            self.svg_widget.load(QByteArray(self.current_svg.encode('utf-8')))
+            self._reset_fit_mode()
+            self.stacked_widget.setCurrentWidget(self.scroll_area)
+        except Exception as e:
+            import traceback; traceback.print_exc()
+            QMessageBox.warning(self, "Render Error", f"Failed to render DXF preview:\n\n{e}")
 
         if self.parent_window and hasattr(self.parent_window, "status"):
             lang_name = "English" if parsed_data.get("language") == "en" else "Japanese"
@@ -489,47 +593,45 @@ class DiagramCanvas(QWidget):
             self.parent_window.sidebar.reset_btn.setEnabled(True)
 
         self._last_prompt = prompt_text
-        self._run_validation(prompt_text, mermaid_code)
+        self._run_validation(prompt_text, parsed_data)
 
     # ─────────────────────────────────────────────────────────────────────────
-    def _on_diagram_text_changed(self, new_code: str):
+    def _on_native_code_applied(self, new_code: str):
         self._current_mermaid_code = new_code
-        self.code_panel.set_code(new_code)
+        try:
+            from ECD.dxf_generator import parse_mermaid_sequence, normalize_for_dxf
+        except ImportError:
+            from dxf_generator import parse_mermaid_sequence, normalize_for_dxf
 
-    def _on_qt_code_changed(self, new_code: str):
-        self._current_mermaid_code = new_code
-        escaped = new_code.replace('\\', '\\\\').replace('`', '\\`').replace('$', '\\$')
-        js = f"""
-(function() {{
-    var ta = document.getElementById('mermaid-code-editor');
-    if (ta) ta.value = `{escaped}`;
-    if (typeof applyCodeToDiagram === 'function') applyCodeToDiagram();
-}})();
-"""
-        self.web_view.page().runJavaScript(js, 0)
-        if self.parent_window and hasattr(self.parent_window, 'status'):
-            self.parent_window.status.showMessage("✓ Diagram updated from code", 2000)
-
-    def _on_element_dblclicked(self, element_id, element_type, current_text):
-        dlg = ElementEditorDialog(element_id, element_type, current_text, self)
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            new_text = dlg.get_new_text()
-            self._update_parsed_data(element_id, element_type, new_text)
-            self.refresh_diagram()
+        try:
+            nodes, edges = parse_mermaid_sequence(new_code)
+            parsed_data = normalize_for_dxf(nodes, edges)
+            # Preserve metadata
+            if self.current_parsed_data:
+                parsed_data["flags"] = self.current_parsed_data.get("flags", {})
+                parsed_data["voltage"] = self.current_parsed_data.get("voltage", "")
+                parsed_data["language"] = self.current_parsed_data.get("language", "en")
+                parsed_data["complexity"] = self.current_parsed_data.get("complexity", "Standard")
+                parsed_data["prompt"] = self.current_parsed_data.get("prompt", self._last_prompt)
+            self.current_parsed_data = parsed_data
+            
+            # Re-generate DXF & SVG natively and show in SVG preview
+            self.current_doc = export_dxf(parsed_data, None)
+            self.current_svg = render_doc_to_svg(self.current_doc)
+            self.svg_widget.load(QByteArray(self.current_svg.encode('utf-8')))
+            self._reset_fit_mode()
+            self.stacked_widget.setCurrentWidget(self.scroll_area)
+            
+            # Re-run validation on the new code
+            prompt = self.current_parsed_data.get("prompt", self._last_prompt) \
+                    if self.current_parsed_data else self._last_prompt
+            self._run_validation(prompt, self.current_parsed_data)
+            
             if self.parent_window and hasattr(self.parent_window, 'status'):
-                self.parent_window.status.showMessage(f"Updated {element_type}: {new_text[:50]}", 3000)
-
-    def _update_parsed_data(self, element_id, element_type, new_text):
-        if not self.current_parsed_data:
-            return
-        components = self.current_parsed_data["components"]
-        if element_type == "participant":
-            for i, (cid, lbl) in enumerate(components):
-                if any(k in new_text.lower() for k in cid.lower().split('_')):
-                    new_lbl = new_text.replace("\n", "<br/>")
-                    components[i] = (cid, new_lbl)
-                    break
-        self.current_parsed_data["components"] = components
+                self.parent_window.status.showMessage("✓ Diagram updated from edited code", 3000)
+        except Exception as e:
+            import traceback; traceback.print_exc()
+            QMessageBox.warning(self, "Invalid Mermaid Code", f"Could not parse edited Mermaid code:\n\n{e}")
 
     def refresh_diagram(self):
         if not self.current_parsed_data:
@@ -538,12 +640,14 @@ class DiagramCanvas(QWidget):
             mc = self.generator.generate_mermaid_code(self.current_parsed_data)
             self._current_mermaid_code = mc
             self.code_panel.set_code(mc)
-            html = self.generator.generate_display_html(mc, self.current_parsed_data, enable_editing=True)
-            self.web_view.setHtml(html)
+            self.current_doc = export_dxf(self.current_parsed_data, None)
+            self.current_svg = render_doc_to_svg(self.current_doc)
+            self.svg_widget.load(QByteArray(self.current_svg.encode('utf-8')))
+            self.stacked_widget.setCurrentWidget(self.scroll_area)
         except Exception as e:
             QMessageBox.critical(self, "Refresh Error", str(e))
 
-    def _run_validation(self, prompt: str, mermaid_code: str):
+    def _run_validation(self, prompt: str, parsed_data: dict):
         self.validation_panel.show_loading()
 
         if self._validation_worker is not None:
@@ -557,7 +661,7 @@ class DiagramCanvas(QWidget):
         complexity = self.current_parsed_data.get("complexity", "Standard") \
                     if self.current_parsed_data else "Standard"
 
-        self._validation_worker = ValidationWorker(prompt, mermaid_code, complexity)
+        self._validation_worker = ValidationWorker(prompt, parsed_data, complexity)
         self._validation_worker.validationComplete.connect(self.validation_panel.show_result)
         self._validation_worker.findingsReady.connect(self.validation_panel.set_findings)
         # ← findingsReady no longer connected to _on_validation_issues_found here
@@ -613,14 +717,30 @@ class DiagramCanvas(QWidget):
         self._current_mermaid_code = fixed_code
         self.code_panel.set_code(fixed_code)
     
-        # Render — pass current parsed_data for sidebar metadata (voltage, language, etc.)
-        # but the diagram content comes entirely from fixed_code.
-        html = self.generator.generate_display_html(
-            fixed_code,
-            self.current_parsed_data or {},
-            enable_editing=True,
-        )
-        self.web_view.setHtml(html)
+        # Parse the corrected Mermaid code back to parsed_data
+        try:
+            from ECD.dxf_generator import parse_mermaid_sequence, normalize_for_dxf
+        except ImportError:
+            from dxf_generator import parse_mermaid_sequence, normalize_for_dxf
+        try:
+            nodes, edges = parse_mermaid_sequence(fixed_code)
+            parsed_data = normalize_for_dxf(nodes, edges)
+            # Preserve flags and voltage
+            if self.current_parsed_data:
+                parsed_data["flags"] = self.current_parsed_data.get("flags", {})
+                parsed_data["voltage"] = self.current_parsed_data.get("voltage", "")
+                parsed_data["language"] = self.current_parsed_data.get("language", "en")
+                parsed_data["complexity"] = self.current_parsed_data.get("complexity", "Standard")
+                parsed_data["prompt"] = self.current_parsed_data.get("prompt", self._last_prompt)
+            self.current_parsed_data = parsed_data
+            
+            self.current_doc = export_dxf(parsed_data, None)
+            self.current_svg = render_doc_to_svg(self.current_doc)
+            self.svg_widget.load(QByteArray(self.current_svg.encode('utf-8')))
+            self.stacked_widget.setCurrentWidget(self.scroll_area)
+        except Exception as e:
+            import traceback; traceback.print_exc()
+            QMessageBox.warning(self, "Fix Render Error", f"Failed to render corrected diagram:\n\n{e}")
     
         # Clear stored findings — they've been consumed
         self.validation_panel._current_findings = []
@@ -636,7 +756,7 @@ class DiagramCanvas(QWidget):
         # so there is no fix loop — only show_result and set_findings are connected.
         prompt = self.current_parsed_data.get("prompt", self._last_prompt) \
                 if self.current_parsed_data else self._last_prompt
-        self._run_validation(prompt, fixed_code)
+        self._run_validation(prompt, self.current_parsed_data)
     
     
     def _on_fix_failed(self, error_msg: str):
@@ -646,223 +766,85 @@ class DiagramCanvas(QWidget):
             self.parent_window.status.showMessage(f"Fix failed: {error_msg[:80]}", 5000)
  
     
-    def _on_element_edited(self, element_id, element_type, new_text, x, y):
-        self._update_parsed_data(element_id, element_type, new_text)
-        self.refresh_diagram()
-        if self.parent_window and hasattr(self.parent_window, 'status'):
-            short = new_text[:30] + ("..." if len(new_text) > 30 else "")
-            self.parent_window.status.showMessage(f"✓ Updated: {short}", 2000)
+    def zoom_in(self):
+        self.svg_widget.scale_factor = min(self.svg_widget.scale_factor * 1.25, 5.0)
+        self._apply_zoom()
+
+    def zoom_out(self):
+        new_scale = self.svg_widget.scale_factor / 1.25
+        if new_scale < 1.05:
+            new_scale = 1.0
+        self.svg_widget.scale_factor = max(new_scale, 0.2)
+        self._apply_zoom()
+
+    def reset_zoom(self):
+        self.svg_widget.scale_factor = 1.0
+        self._apply_zoom()
+
+    def _reset_fit_mode(self):
+        """Restore fit-to-view mode (called on new generation / code apply)."""
+        self.svg_widget.scale_factor = 1.0
+        self.svg_widget.setMinimumSize(0, 0)
+        self.svg_widget.setMaximumSize(16777215, 16777215)
+        self.scroll_area.setWidgetResizable(True)
+        self.svg_widget.update()
+
+    def _apply_zoom(self):
+        """Switch between fit-to-view and scrollable-zoom modes."""
+        zf = self.svg_widget.scale_factor
+        if zf <= 1.0:
+            # Fit-to-view: widget fills viewport, SVG scales to fit
+            self.svg_widget.setMinimumSize(0, 0)
+            self.svg_widget.setMaximumSize(16777215, 16777215)
+            self.scroll_area.setWidgetResizable(True)
+        else:
+            # Zoomed: widget sized larger than viewport so scrollbars appear
+            self.scroll_area.setWidgetResizable(False)
+            vp = self.scroll_area.viewport().size()
+            sz = self.svg_widget.renderer.defaultSize()
+            if not sz.isEmpty() and vp.height() > 0:
+                fit_scale = min(vp.width() / sz.width(), vp.height() / sz.height())
+                w = int(sz.width() * fit_scale * zf)
+                h = int(sz.height() * fit_scale * zf)
+                self.svg_widget.setFixedSize(w, h)
+        self.svg_widget.update()
 
     def get_current_mermaid_code(self) -> str:
         return self.code_panel.get_code() or self._current_mermaid_code
 
     # ── SVG Export ────────────────────────────────────────────────────────────
     def export_svg(self, file_path: str, on_done=None):
-        """Extract the SVG element from the rendered diagram and save it as a file."""
-        js = """
-        (function() {
-            var svg = document.querySelector('.mermaid svg');
-            if (!svg) return JSON.stringify({error: 'No SVG found'});
-
-            // Clone so we don't mutate the live DOM
-            var clone = svg.cloneNode(true);
-
-            // Ensure white background
-            clone.style.background = '#ffffff';
-
-            // Fix any currentColor text fills
-            clone.querySelectorAll('text, tspan').forEach(function(el) {
-                var f = el.getAttribute('fill');
-                if (!f || f === 'currentColor' || f === 'inherit' ||
-                    f === '#ffffff' || f === '#fff' || f === 'white') {
-                    el.setAttribute('fill', '#1a202c');
-                }
-            });
-
-            // Add XML namespace if missing
-            clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
-            clone.setAttribute('xmlns:xlink', 'http://www.w3.org/1999/xlink');
-
-            var serializer = new XMLSerializer();
-            var svgString = '<?xml version="1.0" encoding="UTF-8"?>\\n' +
-                            serializer.serializeToString(clone);
-
-            return JSON.stringify({svg: svgString});
-        })();
-        """
-
-        def _on_svg_data(result):
-            try:
-                import json as _json
-                data = _json.loads(result)
-                if "error" in data:
-                    if on_done:
-                        on_done(False, f"SVG export failed: {data['error']}")
-                    return
-                svg_content = data["svg"]
-                with open(file_path, 'w', encoding='utf-8') as f:
-                    f.write(svg_content)
-                if on_done:
-                    on_done(True, f"✓ SVG saved to {file_path}")
-            except Exception as e:
-                if on_done:
-                    on_done(False, f"SVG save error: {e}")
-
-        self.web_view.page().runJavaScript(js, 0, _on_svg_data)
+        try:
+            if not self.current_svg:
+                raise ValueError("No generated SVG found in memory.")
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write(self.current_svg)
+            if on_done:
+                on_done(True, f"✓ SVG saved to {file_path}")
+        except Exception as e:
+            if on_done:
+                on_done(False, f"SVG save error: {e}")
 
     # ── PDF Export ────────────────────────────────────────────────────────────
     def export_pdf(self, file_path: str, on_done=None):
-        """Print the diagram page to a PDF using Qt's built-in PDF printing."""
-        # Use QPageLayout for PDF output
-        page_layout = QPageLayout(
-            QPageSize(QPageSize.PageSizeId.A4),
-            QPageLayout.Orientation.Landscape,
-            QMarginsF(10, 10, 10, 10),
-            QPageLayout.Unit.Millimeter
-        )
-
-        def _on_pdf_done(file_path_result):
-            # Qt returns the path on success, empty string on failure
-            if file_path_result:
-                if on_done:
-                    on_done(True, f"✓ PDF saved to {file_path}")
-            else:
-                if on_done:
-                    on_done(False, "PDF export failed")
-
-        self.web_view.page().printToPdf(file_path, page_layout)
-        # printToPdf is async; connect to the signal for completion notification
-        self.web_view.page().pdfPrintingFinished.connect(
-            lambda path, success: on_done(success, f"✓ PDF saved to {file_path}" if success else "PDF export failed")
-            if on_done else None
-        )
+        try:
+            if not self.current_doc:
+                raise ValueError("No generated DXF document found in memory.")
+            render_doc_to_pdf(self.current_doc, file_path)
+            if on_done:
+                on_done(True, f"✓ PDF saved to {file_path}")
+        except Exception as e:
+            if on_done:
+                on_done(False, f"PDF save error: {e}")
 
     # ── SVG-only PNG Export (diagram only, no UI chrome) ─────────────────────
     def export_svg_as_png(self, file_path: str, on_done=None):
-        self._svg_export_path    = file_path
-        self._svg_export_on_done = on_done
-        self._export_orig_size   = self.web_view.size()
-
-        js_prepare = """
-        (function() {
-            var svg = document.querySelector('.mermaid svg');
-            if (!svg) return JSON.stringify({error: 'No SVG found'});
-
-            var allTopLevel = document.querySelectorAll(
-                '.tip-bar, .key-grid, .code-panel-label, ' +
-                '#mermaid-code-editor, .apply-row, .badge-row, ' +
-                '.header, #apply-code-btn, .apply-hint'
-            );
-            allTopLevel.forEach(function(el) {
-                el._prevDisplay = el.style.display;
-                el.style.display = 'none';
-            });
-
-            var container = document.querySelector('.container');
-            if (container) {
-                container._prevStyle = container.getAttribute('style') || '';
-                container.style.padding    = '0';
-                container.style.boxShadow  = 'none';
-                container.style.borderRadius = '0';
-                container.style.background = '#ffffff';
-            }
-
-            var wrap = document.querySelector('.mermaid-wrap');
-            if (wrap) {
-                wrap._prevStyle = wrap.getAttribute('style') || '';
-                wrap.style.border     = 'none';
-                wrap.style.padding    = '16px';
-                wrap.style.background = '#ffffff';
-                wrap.style.overflow   = 'visible';
-                wrap.style.maxHeight  = 'none';
-            }
-
-            document.body.style.background = '#ffffff';
-            document.body.style.padding    = '0';
-            document.body.style.margin     = '0';
-            document.body.style.overflow   = 'visible';
-            document.documentElement.style.overflow = 'hidden';
-            window.scrollTo(0, 0);
-
-            var rect = svg.getBoundingClientRect();
-            return JSON.stringify({
-                svgW: Math.ceil(rect.width)  + 8,
-                svgH: Math.ceil(rect.height) + 8
-            });
-        })();
-        """
-        self.web_view.page().runJavaScript(js_prepare, 0, self._on_svg_export_data)
-
-    def _on_svg_export_data(self, result):
         try:
-            import json as _json
-            data = _json.loads(result)
-
-            if "error" in data:
-                self._restore_svg_export()
-                if self._svg_export_on_done:
-                    self._svg_export_on_done(False, f"Export failed: {data['error']}")
-                return
-
-            svgW = max(data["svgW"], 400)
-            svgH = max(data["svgH"], 200)
-
-            self.web_view.setFixedSize(svgW, svgH)
-            self.web_view.page().runJavaScript("window.scrollTo(0,0);", 0)
-            QTimer.singleShot(600, self._grab_svg_only)
-
+            if not self.current_doc:
+                raise ValueError("No generated DXF document found in memory.")
+            render_doc_to_png(self.current_doc, file_path)
+            if on_done:
+                on_done(True, f"✓ PNG saved to {file_path}")
         except Exception as e:
-            self._restore_svg_export()
-            if self._svg_export_on_done:
-                self._svg_export_on_done(False, f"Parse error: {e}")
-
-    def _grab_svg_only(self):
-        try:
-            pixmap = self.web_view.grab()
-            saved  = pixmap.save(self._svg_export_path, "PNG")
-        except Exception as e:
-            saved  = False
-
-        self._restore_svg_export()
-        self.web_view.setMinimumSize(0, 0)
-        self.web_view.setMaximumSize(16777215, 16777215)
-        self.web_view.resize(self._export_orig_size)
-
-        if self._svg_export_on_done:
-            if saved:
-                self._svg_export_on_done(True,  f"✓ Diagram PNG saved to {self._svg_export_path}")
-            else:
-                self._svg_export_on_done(False, f"Failed to save PNG to {self._svg_export_path}")
-
-    def _restore_svg_export(self):
-        js_restore = """
-        (function() {
-            var toRestore = document.querySelectorAll(
-                '.tip-bar, .key-grid, .code-panel-label, ' +
-                '#mermaid-code-editor, .apply-row, .badge-row, ' +
-                '.header, #apply-code-btn, .apply-hint'
-            );
-            toRestore.forEach(function(el) {
-                el.style.display = (el._prevDisplay !== undefined)
-                    ? el._prevDisplay : '';
-            });
-
-            var container = document.querySelector('.container');
-            if (container && container._prevStyle !== undefined) {
-                container.setAttribute('style', container._prevStyle);
-            }
-
-            var wrap = document.querySelector('.mermaid-wrap');
-            if (wrap && wrap._prevStyle !== undefined) {
-                wrap.setAttribute('style', wrap._prevStyle);
-            }
-
-            document.body.style.background = '';
-            document.body.style.padding    = '';
-            document.body.style.margin     = '';
-            document.body.style.overflow   = '';
-            document.documentElement.style.overflow     = '';
-            window.scrollTo(0, 0);
-        })();
-        """
-        self.web_view.page().runJavaScript(js_restore, 0)
+            if on_done:
+                on_done(False, f"PNG save error: {e}")

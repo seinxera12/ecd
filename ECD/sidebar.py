@@ -5,7 +5,10 @@ from PySide6.QtCore import *
 # from PyQt5.QtCore import QWIDGETSIZE_MAX
 
 
-from constants import COMPLEXITY_LEVELS
+try:
+    from ECD.constants import COMPLEXITY_LEVELS
+except ImportError:
+    from constants import COMPLEXITY_LEVELS
 
 
 class Sidebar(QWidget):
@@ -16,8 +19,8 @@ class Sidebar(QWidget):
 
     def _build_ui(self):
         lay = QVBoxLayout(self)
-        lay.setSpacing(10)
-        lay.setContentsMargins(12, 12, 12, 12)
+        lay.setSpacing(16)
+        lay.setContentsMargins(22, 20, 22, 20)
 
         self._collapsed = False
         self._toggle_btn = QPushButton("◀ Hide")
@@ -31,22 +34,22 @@ class Sidebar(QWidget):
         lay.addWidget(self._toggle_btn)
 
         self._content = QWidget()
+        self._content.setStyleSheet("background: transparent;")
         content_lay = QVBoxLayout(self._content)
-        content_lay.setSpacing(10)
-        content_lay.setContentsMargins(0, 0, 0, 0)
+        content_lay.setSpacing(16)
+        content_lay.setContentsMargins(4, 8, 4, 8)
 
         lay.addWidget(self._content)
-        self.setMinimumWidth(280)
-        self.setMaximumWidth(340)
-
+        self.setMinimumWidth(320)
+        self.setMaximumWidth(400)   
 
         title = QLabel("Electrical Diagram Generator")
         title.setFont(QFont("Arial", 13, QFont.Weight.Bold))
         title.setStyleSheet("color:#2c5282; margin-bottom:8px;")
         title.setWordWrap(True)
-        lay.addWidget(title)
+        content_lay.addWidget(title)
 
-        lay.addWidget(QLabel("Diagram description:"))
+        content_lay.addWidget(QLabel("Diagram description:"))
         self.prompt_text = QTextEdit()
         self.prompt_text.setPlaceholderText(
             "Describe your electrical system…\n"
@@ -57,7 +60,7 @@ class Sidebar(QWidget):
             "border:1px solid #cbd5e0; border-radius:5px; padding:6px; font-size:12px;"
             "color:#000000; background:#ffffff;"
         )
-        lay.addWidget(self.prompt_text)
+        content_lay.addWidget(self.prompt_text)
 
         detail_row = QHBoxLayout()
         detail_lbl = QLabel("Detail Level:")
@@ -89,15 +92,15 @@ class Sidebar(QWidget):
         """)
         self.complexity_combo.currentTextChanged.connect(self._on_complexity_changed)
         detail_row.addWidget(self.complexity_combo, 1)
-        lay.addLayout(detail_row)
+        content_lay.addLayout(detail_row)
 
         self.complexity_hint = QLabel(COMPLEXITY_LEVELS["Standard"]["description"])
         self.complexity_hint.setFont(QFont("Arial", 9))
         self.complexity_hint.setStyleSheet("color:#718096; font-style:italic; margin-bottom:4px;")
         self.complexity_hint.setWordWrap(True)
-        lay.addWidget(self.complexity_hint)
+        content_lay.addWidget(self.complexity_hint)
 
-        lay.addWidget(QLabel("Quick templates:"))
+        content_lay.addWidget(QLabel("Quick templates:"))
         self.tmpl_combo = QComboBox()
         self.tmpl_combo.addItems([
             "Basic Distribution",
@@ -107,9 +110,21 @@ class Sidebar(QWidget):
             "Safety Earth System",
             "日本語: 基本的な配電",
         ])
-        self.tmpl_combo.setStyleSheet("color:#000;")
+        self.tmpl_combo.setStyleSheet("""
+            QComboBox {
+                color: #000000;
+                background: #ffffff;
+                border: 1px solid #cbd5e0;
+                border-radius: 5px;
+                padding: 4px 8px;
+            }
+            QComboBox QAbstractItemView {
+                background-color: #ffffff;
+                color: #000000;
+            }
+        """)
         self.tmpl_combo.currentTextChanged.connect(self._load_template)
-        lay.addWidget(self.tmpl_combo)
+        content_lay.addWidget(self.tmpl_combo)
 
         gen_btn = QPushButton("⚡  Generate Diagram")
         gen_btn.setStyleSheet("""
@@ -119,7 +134,7 @@ class Sidebar(QWidget):
             QPushButton:pressed {background:#1a365d;}
         """)
         gen_btn.clicked.connect(self._generate)
-        lay.addWidget(gen_btn)
+        content_lay.addWidget(gen_btn)
 
         self.reset_btn = QPushButton("↺  Reset to Original")
         self.reset_btn.setStyleSheet("""
@@ -130,37 +145,40 @@ class Sidebar(QWidget):
         """)
         self.reset_btn.clicked.connect(self._reset)
         self.reset_btn.setEnabled(False)
-        lay.addWidget(self.reset_btn)
+        content_lay.addWidget(self.reset_btn)
 
-        lay.addStretch()
+        content_lay.addStretch()
 
         hint = QLabel(
-            "💡 Drag any coloured box to reposition it.\n"
-            "Double-click any text to edit it in-place.\n"
-            "Edit Mermaid code → Apply to update diagram."
+            "💡 Double-click any text to edit it in-place."
         )
         hint.setFont(QFont("Arial", 9))
         hint.setStyleSheet("color:#718096; margin-top:10px;")
         hint.setWordWrap(True)
-        lay.addWidget(hint)
+        content_lay.addWidget(hint)
 
-        self.setMinimumWidth(280)
-        self.setMaximumWidth(340)
-        self.setStyleSheet("QWidget{background:#f7fafc;border-right:1px solid #e2e8f0;} QLabel{color:#2d3748;}")
+        self.setMinimumWidth(320)
+        self.setMaximumWidth(400)
+        self.setObjectName("SidebarRoot")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet(
+            "#SidebarRoot{background:#f7fafc;border:1px solid #e2e8f0;border-radius:14px;}"
+            "QLabel{color:#2d3748;}"
+        )
 
         self._update_complexity_style("Neutral")
-
 
     def _toggle_collapse(self):
         self._collapsed = not self._collapsed
         self._content.setVisible(not self._collapsed)
         if self._collapsed:
-            self.setFixedWidth(32)
+            self.layout().setContentsMargins(4, 12, 4, 12)
+            self.setFixedWidth(40)
             self._toggle_btn.setText("▶")
         else:
-            self.setMinimumWidth(280)
-            self.setMaximumWidth(340)
-            self.setFixedWidth(QWIDGETSIZE_MAX)
+            self.layout().setContentsMargins(22, 20, 22, 20)
+            self.setMinimumWidth(320)
+            self.setMaximumWidth(400)
             self._toggle_btn.setText("◀ Hide")
 
     def _on_complexity_changed(self, level: str):

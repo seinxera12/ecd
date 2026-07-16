@@ -10,7 +10,7 @@ from PySide6.QtWebEngineCore import QWebEnginePage
 import json
 import requests
 from Kicad_exporter import export_kicad_schematic
-from dxf_generator import mermaid_to_dxf, export_dxf
+from dxf_generator_old import mermaid_to_dxf, export_dxf
 
 
 
