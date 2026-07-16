@@ -65,7 +65,7 @@ GEMINI_SCHEMA = {
 
 
 class GeminiClient(LLMClientBase):
-    def __init__(self, model: str = "gemini-2.5-flash", api_key: str | None = None):
+    def __init__(self, model: str = "gemini-3.5-flash", api_key: str | None = None):
         self.model = model
         self.api_key = api_key or os.environ.get("GEMINI_API_KEY")
         if not self.api_key:
@@ -106,7 +106,7 @@ Complexity level in effect: {complexity}
 """
 
         print(f"[gemini] generating structured data | model={self.model}")
-        raw = self._call(system_prompt, prompt, max_tokens=1024)
+        raw = self._call(system_prompt, prompt, max_tokens=4096)
         result = json.loads(raw)
 
         # Gemini schema uses "none" (a real enum string) instead of null,

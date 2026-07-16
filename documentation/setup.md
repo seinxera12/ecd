@@ -64,6 +64,7 @@ pip install -r requirement.txt
 This installs only the core dependencies:
 - `ezdxf==1.4.3` - DXF file generation
 - `PySide6==6.10.1` - Qt GUI framework
+- `matplotlib` - Required for rendering and exporting diagrams as PNG and PDF files (ezdxf drawing addon)
 
 **Option B: Full Installation**
 ```bash
@@ -74,8 +75,9 @@ This installs additional packages including:
 - Machine learning libraries (tensorflow, torch)
 - Web frameworks (fastapi, streamlit)
 - Various utilities
+- `matplotlib` and other CAD dependencies
 
-> **Note**: The full requirements.txt appears to include packages not required for basic operation. Use minimal installation unless you need specific features.
+> **Note**: The full requirements.txt appears to include packages not required for basic operation. Use minimal installation (Option A) with matplotlib unless you need specific features.
 
 ### Step 4: Install Ollama
 
@@ -111,12 +113,25 @@ python -c "import requests; requests.get('http://localhost:11434'); print('Ollam
 
 ## Running the Project
 
-### Development Mode
+All executable scripts and modules in the project should be run from the **project root directory** using Python's module (`-m`) notation to ensure correct package import resolution.
 
+### Running the Main GUI Application
+To launch the main desktop diagram app:
 ```bash
-# From project root
-cd ECD
-python main_app.py
+python -m ECD.main_app
+```
+
+### Running Scripts and Diagnostics
+To execute other utility, verification, or regression scripts in the repository:
+```bash
+# Verify DXF symbol wiring
+python -m ECD.scripts.verify_dxf_symbol_wiring
+
+# Verify Pin model connectivity checks
+python -m ECD.scripts.verify_pin_model
+
+# Run custom scratch tests
+python C:\Users\Administrator\.gemini\antigravity\brain\74378425-7dcb-45df-9acb-201ab2ece057\scratch\test_gemini_client_live.py
 ```
 
 ### Expected Behavior
@@ -207,18 +222,59 @@ Solution: Ensure all PySide6 packages are included
 
 ## Environment Variables
 
-No environment variables are required. All configuration is in code.
+The application can be configured using environment variables loaded from a `.env` file at the project root, or set dynamically in your terminal shell.
+
+### LLM Backend Selection (`ECD_LLM_BACKEND`)
+Defines which LLM backend the application uses for diagram generation and parsing.
+- **Value options**:
+  - `ollama` (Default, offline, shipping path): Local Ollama server.
+  - `groq` (Cloud): Fast cloud hosted models.
+  - `gemini` (Cloud): Google Gemini models.
+
+### Changing the Backend LLM via Terminal
+You can temporarily or permanently override the active backend directly from your terminal before running the application:
+
+#### Option A: Windows PowerShell (Session-only)
+```powershell
+# Set backend to Groq
+$env:ECD_LLM_BACKEND="groq"
+
+# Verify the backend value
+echo $env:ECD_LLM_BACKEND
+```
+
+#### Option B: Windows Command Prompt (Session-only)
+```cmd
+# Set backend to Groq
+set ECD_LLM_BACKEND=groq
+
+# Verify the backend value
+echo %ECD_LLM_BACKEND%
+```
+
+#### Option C: Persistent Environment Variable (Across all sessions)
+To set the variable permanently in Windows registry:
+```cmd
+# Set backend persistently
+setx ECD_LLM_BACKEND "groq"
+```
+*(Note: Restart your terminal/IDE for persistent changes to take effect.)*
+
+### API Keys
+Required when running cloud-based LLM backends:
+- **`GROQ_API_KEY`**: Set your API key from Groq console (required when `ECD_LLM_BACKEND=groq`).
+- **`GEMINI_API_KEY`**: Set your Google AI Studio API key (required when `ECD_LLM_BACKEND=gemini`).
+
+### Default Models per Backend
+- **Ollama**: Defaults to `mistral:7b-instruct`.
+- **Groq**: Defaults to `openai/gpt-oss-20b`.
+- **Gemini**: Defaults to `gemini-3.5-flash` (with a token limit of 4096 to prevent thinking/structured output truncation).
+
+---
 
 ### Optional Customization
 
-To change the LLM endpoint, modify `ECD/ollama_client.py`:
-
-```python
-class OllamaClient:
-    def __init__(self, model="mistral:7b-instruct", url="http://localhost:11434/api/generate"):
-        self.model = model
-        self.url = url
-```
+To change the LLM endpoints or model names programmatically, you can modify the respective client classes inside `ECD/llm/` (`ollama_client.py`, `groq_client.py`, `gemini_client.py`).
 
 ---
 

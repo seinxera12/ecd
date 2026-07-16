@@ -306,17 +306,19 @@ def main():
 - Manage validation workflow
 - Export to PNG, SVG, PDF
 - Store current diagram state
+- **Expose fallback state visually**: Prevent silent fallback when Groq/Gemini calls fail (429 rate limits, API offline) by displaying "Regex Fallback" in the status bar and injecting a warning in the validation findings panel.
 
 **Key Classes:**
 - `DiagramCanvas(QWidget)`: Main rendering widget
   - `generate_from_prompt()`: Async diagram generation
   - `_run_validation()`: Start validation worker
+  - `_on_validation_complete()`: Post-process results and inject fallback warning banner if `self._is_regex_fallback` is active.
   - `export_svg()`, `export_svg_as_png()`: Export methods
   - `refresh_diagram()`: Re-render after edits
 
 **Dependencies:**
 - mermaid_generator.MermaidGenerator
-- ollama_client.OllamaClient, GenerationWorker
+- llm.llm_factory.get_llm_client
 - web_bridge.WebBridge
 - element_editor.ElementEditorDialog
 - ValidationWorker.ValidationWorker, ValidationPanel, MermaidFixWorker
@@ -330,17 +332,19 @@ def main():
 - `_validation_worker`: Background validation thread
 - `_gen_worker`: Background generation thread
 - `_fix_worker`: Background auto-fix thread
+- `_is_regex_fallback`: Boolean tracking if the fallback regex parser was used due to LLM failure
 
-**Critical Flow - Async Generation:**
+**Critical Flow - Async Generation with Fallback handling:**
 ```python
 def generate_from_prompt(self, prompt_text, complexity_level="Neutral"):
-    # 1. Show loading screen
+    # 1. Reset fallback status and show loading screen
+    self._is_regex_fallback = False
     self._show_loading()
     
     # 2. Start background worker
     self._gen_worker = GenerationWorker(prompt_text, complexity_level, self.generator)
     self._gen_worker.finished.connect(self._on_llm_finished)
-    self._gen_worker.failed.connect(self._on_llm_failed)
+    self._gen_worker.failed.connect(self._on_llm_failed)  # Triggers regex fallback and sets _is_regex_fallback = True
     self._gen_worker.start()
     
     # 3. Return immediately (non-blocking)
@@ -419,45 +423,22 @@ self.components_map = {
 
 ---
 
-### ollama_client.py
+### ECD/llm/ (LLM Clients & Factory)
 
-**Purpose:** Interface with Ollama LLM for prompt parsing
+**Purpose:** Multi-backend LLM parsing and schema-structured generation.
 
 **Responsibilities:**
-- Send prompts to Ollama API
-- Extract JSON from LLM responses
-- Run LLM calls in background threads
-- Handle API errors gracefully
+- Provide client interfaces for **Ollama** (offline local), **Groq** (cloud), and **Gemini** (cloud) backends.
+- Use a central factory (`llm_factory.py`) to resolve active client based on `ECD_LLM_BACKEND` environment variable.
+- Enforce strict JSON schema-structured outputs from external APIs.
 
-**Key Classes:**
-- `OllamaClient`: Synchronous LLM client
-  - `prompt_to_structured_data()`: Main API call
-  - `_extract_json()`: Parse JSON from response
+**Key Classes & Modules:**
+- `llm_factory.get_llm_client()`: Returns the active `LLMClientBase` implementation.
+- `OllamaClient`: Local offline client targeting `mistral:7b-instruct`.
+- `GroqClient`: High-speed cloud client targeting `openai/gpt-oss-20b`.
+- `GeminiClient`: Google AI Studio cloud client targeting **`gemini-3.5-flash`** (with a high-allowance token limit of `4096` to prevent truncation of thinking outputs).
 
-- `GenerationWorker(QThread)`: Background LLM worker
-  - `finished` Signal: Emits parsed_data on success
-  - `failed` Signal: Emits error message
-
-**API Configuration:**
-```python
-def __init__(self, model="mistral:7b-instruct", url="http://localhost:11434/api/generate"):
-    self.model = model
-    self.url = url
-```
-
-**LLM Parameters:**
-```python
-"options": {
-    "temperature": 0.0,      # Deterministic output
-    "top_p": 0.9,
-    "num_predict": 1024,     # Max tokens
-    "num_ctx": 8192,         # Context window
-}
-```
-
-**Used by:** DiagramCanvas, ValidationWorker
-
----
+**Used by:** DiagramCanvas (via `GenerationWorker` thread), ValidationWorker, MermaidFixWorker
 
 ### ValidationWorker.py
 
@@ -798,12 +779,15 @@ parsed_data = {
 
 ### Internal APIs
 
-#### OllamaClient.prompt_to_structured_data()
+#### LLMClientBase.prompt_to_structured_data() (Implemented by OllamaClient, GroqClient, GeminiClient)
 
 ```
-Purpose: Parse natural language prompt into structured data
-Method: HTTP POST to Ollama API
-Endpoint: http://localhost:11434/api/generate
+Purpose: Parse natural language prompt into structured data matching the strict JSON schema
+Method: HTTP POST to the respective LLM API endpoint (local/cloud)
+Endpoint: 
+  - Ollama: http://localhost:11434/api/generate
+  - Groq: https://api.groq.com/openai/v1/chat/completions
+  - Gemini: https://generativelanguage.googleapis.com/v1beta/models/...
 
 Parameters:
   - prompt (str): User's diagram description
@@ -814,7 +798,8 @@ Returns:
       "components": [(id, label), ...],
       "flags": {show_neutral: bool, ...},
       "voltage": str,
-      "language": "en" | "ja"
+      "language": "en" | "ja",
+      "phase_hint": str
     }
 
 Raises:

@@ -367,6 +367,7 @@ class DiagramCanvas(QWidget):
         self._validation_worker = None
         self._gen_worker = None
         self._fix_worker = None
+        self._is_regex_fallback = False
 
     def _build_ui(self):
         lay = QVBoxLayout(self)
@@ -444,6 +445,7 @@ class DiagramCanvas(QWidget):
             self._gen_worker.deleteLater()
             self._gen_worker = None
 
+        self._is_regex_fallback = False
         self._show_loading()
         self._pending_prompt     = prompt_text
         self._pending_complexity = complexity_level
@@ -457,6 +459,7 @@ class DiagramCanvas(QWidget):
     def _on_llm_failed(self, error_msg: str):
         """LLM unavailable — fall back to fast regex parser on the main thread."""
         print(f"LLM parsing failed, using regex fallback: {error_msg}")
+        self._is_regex_fallback = True
         try:
             parsed_data = self.generator.parse_prompt(
                 self._pending_prompt, self._pending_complexity)
@@ -467,6 +470,7 @@ class DiagramCanvas(QWidget):
 
     def _on_llm_finished(self, parsed_data: dict):
         """Called on the main thread once the background LLM call succeeds."""
+        self._is_regex_fallback = False
         prompt_text      = self._pending_prompt
         complexity_level = self._pending_complexity
         try:
@@ -583,8 +587,9 @@ class DiagramCanvas(QWidget):
 
         if self.parent_window and hasattr(self.parent_window, "status"):
             lang_name = "English" if parsed_data.get("language") == "en" else "Japanese"
+            gen_source = "Regex Fallback" if getattr(self, "_is_regex_fallback", False) else "LLM"
             self.parent_window.status.showMessage(
-                f"Diagram generated ({lang_name}, {complexity_level}), "
+                f"Diagram generated via {gen_source} ({lang_name}, {complexity_level}), "
                 f"{len(parsed_data.get('components', []))} components. "
                 "Drag boxes · Double-click text · Edit code below.", 6000)
 
@@ -662,10 +667,24 @@ class DiagramCanvas(QWidget):
                     if self.current_parsed_data else "Standard"
 
         self._validation_worker = ValidationWorker(prompt, parsed_data, complexity)
-        self._validation_worker.validationComplete.connect(self.validation_panel.show_result)
+        self._validation_worker.validationComplete.connect(self._on_validation_complete)
         self._validation_worker.findingsReady.connect(self.validation_panel.set_findings)
         # ← findingsReady no longer connected to _on_validation_issues_found here
         self._validation_worker.start()
+
+    def _on_validation_complete(self, text: str, has_issues: bool):
+        # If fallback was used for generation, prepend a warning to the findings
+        if getattr(self, "_is_regex_fallback", False):
+            warning_text = "⚠️ [FALLBACK WARNING] The diagram was generated using the local regex fallback parser because the Groq LLM model was unavailable (e.g. rate limit exceeded, API offline, or network error). Output may be incomplete or lack fine-grained electrical connections."
+            if "FINDINGS:" in text:
+                parts = text.split("FINDINGS:")
+                # Prepend the fallback warning to findings bullet list
+                text = f"{parts[0]}FINDINGS:\n- {warning_text}\n{parts[1]}"
+            else:
+                text = f"{text}\nFINDINGS:\n- {warning_text}"
+            has_issues = True
+            
+        self.validation_panel.show_result(text, has_issues)
 
 
     def _on_validation_issues_found(self, findings: list):
