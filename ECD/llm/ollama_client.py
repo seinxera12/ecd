@@ -50,7 +50,7 @@ STRUCTURED_SCHEMA = {
 }
 
 class OllamaClient(LLMClientBase):
-    def __init__(self, model="qwen2.5:7b-instruct", url="http://localhost:11434/api/generate"):
+    def __init__(self, model="mistral:7b-instruct", url="http://localhost:11434/api/generate"):
         self.model = model
         self.url = url
 

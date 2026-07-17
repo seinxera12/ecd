@@ -655,7 +655,7 @@ def export_dxf(parsed_data: dict, output_path: str = None) -> Optional[ezdxf.doc
         legend_symbols.append(("SYM_GENERIC", "Custom Device"))
 
     n_legend_items = len(legend_wires) + len(legend_symbols)
-    legend_height = n_legend_items * 12.0 + 15.0
+    legend_height = n_legend_items * 16.0 + 15.0
     
     col_x = 0.0
     start_y = 100.0
@@ -746,18 +746,22 @@ def export_dxf(parsed_data: dict, output_path: str = None) -> Optional[ezdxf.doc
             main_lbl = "EBar"
         
         if base_type == "supply":
+            offset = 12.0 if phase_mode == "three" else 5.0
             msp.add_text(
                 main_lbl,
                 dxfattribs={"height": FONT_H_MAIN, "layer": "COMPONENTS"}
-            ).set_placement((bx + 3.0, by), align=TextEntityAlignment.MIDDLE_LEFT)
+            ).set_placement((bx + offset, by), align=TextEntityAlignment.MIDDLE_LEFT)
         elif base_type in ["loads", "nbar", "ebar"]:
             # Labels for loads are drawn in the Load Schedule on the right side of the sheet.
             # Labels for nbar/ebar are drawn at the top of the vertical rails above the figure.
             pass
         else:
             # Shift busbar label up slightly to prevent overlapping the horizontal wire
-            y_offset = 4.0 if cid == "bus" else 0.0
-            x_offset = 3.5 if base_type == "outcb" else 8.0
+            y_offset = 7.0 if cid == "bus" else 0.0
+            if base_type == "outcb":
+                x_offset = 8.0 if phase_mode == "three" else 5.0
+            else:
+                x_offset = 12.0 if phase_mode == "three" else 8.0
             msp.add_text(
                 main_lbl,
                 dxfattribs={"height": FONT_H_SMALL, "layer": "COMPONENTS"}
@@ -1122,7 +1126,7 @@ def export_dxf(parsed_data: dict, output_path: str = None) -> Optional[ezdxf.doc
         _draw_wire(msp, [(lx, ly), (lx + 15.0, ly)],
                    color=color, layer="LEGEND", linetype=lt, lineweight=18)
         _draw_label(msp, lx + 20.0, ly, desc, color=color, layer="LEGEND")
-        ly -= 12.0
+        ly -= 16.0
         
     # 2. Draw symbol legend items
     for block_name, desc in legend_symbols:
@@ -1145,7 +1149,7 @@ def export_dxf(parsed_data: dict, output_path: str = None) -> Optional[ezdxf.doc
             msp.add_blockref(block_name, insert=(lx + 7.5, ly), dxfattribs={"layer": "LEGEND"})
             
         _draw_label(msp, lx + 20.0, ly, desc, color=colors.WHITE, layer="LEGEND")
-        ly -= 12.0
+        ly -= 16.0
 
     # ── Draw NBar / EBar Labels above the figure (directly above vertical lines) ──
     if "nbar" in box_positions:

@@ -226,7 +226,7 @@ def get_base_type(component_id: str) -> str:
     cid = component_id.lower()
     if re.match(r'^(outcb|outgoingcb|outcr|outgoingcr|mcb|cb)(?:_|\d|\b|$)', cid):
         return "outcb"
-    if re.match(r'^loads?(?:_|\d|\b|$)', cid):
+    if re.match(r'^(loads?|socket|outlet|lamp|motor|heater|charger|lighting|pump|fan|ac|aircon|ev|cooker|oven|hob|appliance|device)(?:_|\d|\b|$)', cid):
         return "loads"
     return cid
 

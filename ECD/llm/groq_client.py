@@ -75,6 +75,13 @@ class GroqClient(LLMClientBase):
         # Safe debug print
         print("[groq] API response received.")
         
+        usage = resp_json.get("usage", {})
+        total_tokens = usage.get("total_tokens", "N/A")
+        
+        print("\n========== TOKEN USAGE ==========")
+        print(f"Tokens Used       : {total_tokens}")
+        print("=================================\n")
+        
         message = resp_json["choices"][0]["message"]
         content = message.get("content")
         if content is None:
@@ -99,7 +106,7 @@ Return ONLY valid JSON matching the required schema -- no explanation, no markdo
 """
 
         print(f"[groq] generating structured data | model={self.model}")
-        raw = self._call(system_prompt, prompt, schema=STRUCTURED_SCHEMA, max_tokens=2048)
+        raw = self._call(system_prompt, prompt, schema=STRUCTURED_SCHEMA, max_tokens=4096)
 
         try:
             result = json.loads(raw)

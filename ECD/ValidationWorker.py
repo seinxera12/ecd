@@ -387,10 +387,20 @@ class ValidationPanel(QWidget):
         header.addWidget(self.close_btn)
         lay.addLayout(header)
 
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet("QScrollArea { background: transparent; }")
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
         self.findings_lbl = QLabel("")
         self.findings_lbl.setWordWrap(True)
         self.findings_lbl.setFont(QFont("Arial", 9))
-        lay.addWidget(self.findings_lbl)
+        self.findings_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        scroll.setWidget(self.findings_lbl)
+        
+        lay.addWidget(scroll)
 
         self.setStyleSheet("""
             ValidationPanel {
