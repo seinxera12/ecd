@@ -35,6 +35,7 @@ class MainWindow(QMainWindow):
         file_m = mb.addMenu("&File")
         for label, shortcut, slot in [
             ("&New",          "Ctrl+N", self.new_diagram),
+            ("&Open Diagram", "Ctrl+O", self.open_diagram),
             ("&Save Diagram", "Ctrl+S", self.save_diagram),
         ]:
             a = QAction(label, self); a.setShortcut(shortcut); a.triggered.connect(slot); file_m.addAction(a)
@@ -43,14 +44,13 @@ class MainWindow(QMainWindow):
         # Export submenu with PNG, SVG, PDF, and Mermaid download
         exp = file_m.addMenu("&Export")
         for label, slot in [
-            # ("Export as PNG (full page)",    self.export_as_png),
             ("Export as PNG", self.export_as_png),
             ("Export as SVG",                self.export_as_svg),
             ("Export as PDF",                self.export_as_pdf),
             ("Download Mermaid Code (.mmd)", self.download_mermaid_code),
             ("Export as KiCad Schematic",    self.export_as_kicad),
             ("Export as DXF",               self.export_as_dxf),
-
+            ("Export as JSON",               self.export_as_json),
         ]:
             a = QAction(label, self); a.triggered.connect(slot); exp.addAction(a)
 
@@ -130,6 +130,32 @@ class MainWindow(QMainWindow):
         os.makedirs(renders_dir, exist_ok=True)
         return os.path.join(renders_dir, filename)
 
+    def open_diagram(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Open Diagram", self._get_renders_default_path(""), "JSON Files (*.json)")
+        if path:
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                
+                # Restore current_parsed_data
+                data.pop("_mermaid_code", None)
+                self.canvas.current_parsed_data = data
+                self.canvas.original_parsed_data = data.copy()
+                
+                # Clear and render
+                self.canvas.refresh_diagram()
+                
+                layout_overrides = data.get("layout_overrides", {})
+                text_overrides = data.get("text_overrides", {})
+                if layout_overrides or text_overrides:
+                    self.sidebar.reset_btn.setEnabled(True)
+                else:
+                    self.sidebar.reset_btn.setEnabled(False)
+                    
+                self.status.showMessage(f"Loaded diagram from {path}", 3000)
+            except Exception as e:
+                QMessageBox.critical(self, "Load Error", f"Could not load diagram:\n{e}")
+
     def save_diagram(self):
         if not self._require_diagram("save"): return
         path, _ = QFileDialog.getSaveFileName(self, "Save Diagram", self._get_renders_default_path("diagram.json"), "JSON Files (*.json)")
@@ -140,6 +166,9 @@ class MainWindow(QMainWindow):
                 json.dump(data, f, ensure_ascii=False, indent=2)
             self.status.showMessage(f"Saved to {path}", 3000)
 
+    def export_as_json(self):
+        self.save_diagram()
+
 
     def export_as_png(self):
         if not self._require_diagram(): return
@@ -147,9 +176,10 @@ class MainWindow(QMainWindow):
         if not path: return
         self.status.showMessage("⏳ Preparing diagram-only PNG…", 0)
         try:
-            if not self.canvas.current_doc:
+            doc = self.canvas.get_updated_document()
+            if not doc:
                 raise ValueError("No generated DXF document found in memory.")
-            render_doc_to_png(self.canvas.current_doc, path)
+            render_doc_to_png(doc, path)
             msg = f"✓ PNG saved to {path}"
             self.status.showMessage(msg, 4000)
             QMessageBox.information(self, "Exported", msg)
@@ -164,10 +194,11 @@ class MainWindow(QMainWindow):
         if not path: return
         self.status.showMessage("⏳ Exporting SVG…", 0)
         try:
-            if not self.canvas.current_svg:
+            svg_str = self.canvas.get_updated_svg()
+            if not svg_str:
                 raise ValueError("No generated SVG found in memory.")
             with open(path, 'w', encoding='utf-8') as f:
-                f.write(self.canvas.current_svg)
+                f.write(svg_str)
             msg = f"✓ SVG saved to {path}"
             self.status.showMessage(msg, 4000)
             QMessageBox.information(self, "Exported", msg)
@@ -182,9 +213,10 @@ class MainWindow(QMainWindow):
         if not path: return
         self.status.showMessage("⏳ Generating PDF…", 0)
         try:
-            if not self.canvas.current_doc:
+            doc = self.canvas.get_updated_document()
+            if not doc:
                 raise ValueError("No generated DXF document found in memory.")
-            render_doc_to_pdf(self.canvas.current_doc, path)
+            render_doc_to_pdf(doc, path)
             msg = f"✓ PDF saved to {path}"
             self.status.showMessage(msg, 4000)
             QMessageBox.information(self, "Exported", msg)
@@ -308,9 +340,10 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            if not self.canvas.current_doc:
+            doc = self.canvas.get_updated_document()
+            if not doc:
                 raise ValueError("No generated DXF document found in memory.")
-            self.canvas.current_doc.saveas(path)
+            doc.saveas(path)
             msg = f"✓ DXF file saved to {path}"
             self.status.showMessage(msg, 4000)
             QMessageBox.information(self, "Exported", msg)

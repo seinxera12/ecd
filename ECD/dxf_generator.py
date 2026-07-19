@@ -202,6 +202,7 @@ def _get_page_size(n_circuits: int, phase_mode: str = "single") -> tuple[float, 
 def _add_layers(doc) -> None:
     layers_def = {
         "BACKGROUND":    (250,            "Continuous"),
+        "PAGE_MARGIN":   (250,            "Continuous"),
         "COMPONENTS":    (colors.WHITE,   "Continuous"),
         "WIRES_PHASE":   (COL_PHASE,      "Continuous"),
         "WIRES_NEUTRAL": (COL_NEUTRAL,    "DASHED"),
@@ -535,6 +536,7 @@ def export_dxf(parsed_data: dict, output_path: str = None) -> Optional[ezdxf.doc
     voltage: str = parsed_data.get("voltage", "")
     language: str = parsed_data.get("language", "en")
     connections: list[tuple[str, str]] = parsed_data.get("connections") or ensure_connections(parsed_data)
+    text_overrides = parsed_data.get("text_overrides", {})
 
     comp_map = {cid: _clean(lbl) for cid, lbl in components}
 
@@ -672,14 +674,17 @@ def export_dxf(parsed_data: dict, output_path: str = None) -> Optional[ezdxf.doc
     tx = (min(x_coords) + max(x_coords)) / 2.0
     ty = max_y - 30.0
     title_entities = []
-    for line in title_lines:
+    for i, line in enumerate(title_lines):
         if line:
+            label_id = f"title.line_{i}"
+            display_text = text_overrides.get(label_id, line)
             t_ent = msp.add_text(
-                line,
+                display_text,
                 dxfattribs={"layer": "TITLE", "height": FONT_H_MAIN + 1.0,
                             "color": COL_TITLE},
             )
             t_ent.set_placement((tx, ty), align=TextEntityAlignment.BOTTOM_CENTER)
+            t_ent.label_id = label_id
             title_entities.append(t_ent)
             ty += (FONT_H_MAIN + 1.0) * 2.0
 
@@ -747,10 +752,14 @@ def export_dxf(parsed_data: dict, output_path: str = None) -> Optional[ezdxf.doc
         
         if base_type == "supply":
             offset = 12.0 if phase_mode == "three" else 5.0
-            msp.add_text(
-                main_lbl,
+            label_id = f"{cid}.label"
+            display_text = text_overrides.get(label_id, main_lbl)
+            t_ent = msp.add_text(
+                display_text,
                 dxfattribs={"height": FONT_H_MAIN, "layer": "COMPONENTS"}
-            ).set_placement((bx + offset, by), align=TextEntityAlignment.MIDDLE_LEFT)
+            )
+            t_ent.set_placement((bx + offset, by), align=TextEntityAlignment.MIDDLE_LEFT)
+            t_ent.label_id = label_id
         elif base_type in ["loads", "nbar", "ebar"]:
             # Labels for loads are drawn in the Load Schedule on the right side of the sheet.
             # Labels for nbar/ebar are drawn at the top of the vertical rails above the figure.
@@ -762,24 +771,38 @@ def export_dxf(parsed_data: dict, output_path: str = None) -> Optional[ezdxf.doc
                 x_offset = 8.0 if phase_mode == "three" else 5.0
             else:
                 x_offset = 12.0 if phase_mode == "three" else 8.0
-            msp.add_text(
-                main_lbl,
+            
+            label_id = f"{cid}.label"
+            display_text = text_overrides.get(label_id, main_lbl)
+            t_ent = msp.add_text(
+                display_text,
                 dxfattribs={"height": FONT_H_SMALL, "layer": "COMPONENTS"}
-            ).set_placement((bx + x_offset, by + y_offset), align=TextEntityAlignment.MIDDLE_LEFT)
+            )
+            t_ent.set_placement((bx + x_offset, by + y_offset), align=TextEntityAlignment.MIDDLE_LEFT)
+            t_ent.label_id = label_id
+            
             if sub_lbl:
-                msp.add_text(
-                    sub_lbl,
+                label_id_sub = f"{cid}.rating"
+                display_sub = text_overrides.get(label_id_sub, sub_lbl)
+                t_ent_sub = msp.add_text(
+                    display_sub,
                     dxfattribs={"height": FONT_H_SMALL - 0.5, "layer": "COMPONENTS"}
-                  ).set_placement((bx + x_offset, by - 3.0 + y_offset), align=TextEntityAlignment.MIDDLE_LEFT)
+                )
+                t_ent_sub.set_placement((bx + x_offset, by - 3.0 + y_offset), align=TextEntityAlignment.MIDDLE_LEFT)
+                t_ent_sub.label_id = label_id_sub
                       
     # Insert ground symbol below ebar
     if "ebar" in box_positions:
         ex, ey = box_positions["ebar"]
         msp.add_blockref("SYM_GROUND", insert=(ex, ey - 20.0))
-        msp.add_text(
-            "GND",
+        label_id = "gnd.label"
+        display_text = text_overrides.get(label_id, "GND")
+        t_ent = msp.add_text(
+            display_text,
             dxfattribs={"height": FONT_H_SMALL, "layer": "COMPONENTS"}
-        ).set_placement((ex - 6.0, ey - 20.0), align=TextEntityAlignment.MIDDLE_RIGHT)
+        )
+        t_ent.set_placement((ex - 6.0, ey - 20.0), align=TextEntityAlignment.MIDDLE_RIGHT)
+        t_ent.label_id = label_id
 
     # ── Draw wires from netlist connections ──────────────────────────────────
     nbar_x = box_positions["nbar"][0] if "nbar" in box_positions else -45.0
@@ -1155,17 +1178,25 @@ def export_dxf(parsed_data: dict, output_path: str = None) -> Optional[ezdxf.doc
     if "nbar" in box_positions:
         nx = box_positions["nbar"][0]
         ny = max(nbar_y_coords) + 3.0 if nbar_y_coords else 95.0
-        msp.add_text(
-            "NBar",
+        label_id = "nbar.title"
+        display_text = text_overrides.get(label_id, "NBar")
+        t_ent = msp.add_text(
+            display_text,
             dxfattribs={"height": FONT_H_SMALL + 0.5, "layer": "NOTES", "color": COL_TITLE}
-        ).set_placement((nx, ny), align=TextEntityAlignment.BOTTOM_CENTER)
+        )
+        t_ent.set_placement((nx, ny), align=TextEntityAlignment.BOTTOM_CENTER)
+        t_ent.label_id = label_id
     if "ebar" in box_positions:
         ex = box_positions["ebar"][0]
         ey = max(ebar_y_coords) + 3.0 if ebar_y_coords else 95.0
-        msp.add_text(
-            "EBar",
+        label_id = "ebar.title"
+        display_text = text_overrides.get(label_id, "EBar")
+        t_ent = msp.add_text(
+            display_text,
             dxfattribs={"height": FONT_H_SMALL + 0.5, "layer": "NOTES", "color": COL_TITLE}
-        ).set_placement((ex, ey), align=TextEntityAlignment.BOTTOM_CENTER)
+        )
+        t_ent.set_placement((ex, ey), align=TextEntityAlignment.BOTTOM_CENTER)
+        t_ent.label_id = label_id
 
     # ── Draw Load Schedule (right side of diagram) ────────────────────────────
     load_items = []
@@ -1188,35 +1219,43 @@ def export_dxf(parsed_data: dict, output_path: str = None) -> Optional[ezdxf.doc
             
             # Format nicely for the table (e.g., Outgoing Breaker, MCB 1, 10A)
             lbl = lbl.replace(" | ", ", ")
-            load_items.append((cb_id.upper(), lbl))
+            load_items.append((cb_id, cb_id.upper(), lbl))
     else:
         lbl = comp_map.get("loads", "LOAD")
-        load_items.append(("LOAD", lbl))
+        load_items.append(("loads", "LOAD", lbl))
 
     rx = max_x - 112.0
     ry = max_y - 60.0
     
-    msp.add_text(
-        "LOAD SCHEDULE",
+    label_id = "schedule.title"
+    display_text = text_overrides.get(label_id, "LOAD SCHEDULE")
+    t_ent = msp.add_text(
+        display_text,
         dxfattribs={"height": FONT_H_SMALL + 0.5, "layer": "NOTES", "color": colors.WHITE}
-    ).set_placement((rx, ry), align=TextEntityAlignment.MIDDLE_LEFT)
+    )
+    t_ent.set_placement((rx, ry), align=TextEntityAlignment.MIDDLE_LEFT)
+    t_ent.label_id = label_id
     
     msp.add_line((rx, ry - 3.0), (rx + 90.0, ry - 3.0), dxfattribs={"layer": "NOTES", "color": colors.WHITE})
     
     ry -= 10.0
-    for tag, desc in load_items:
+    for cb_id, tag, desc in load_items:
         if len(desc) > 55:
             desc = desc[:52] + "…"
         text = f"{tag}: {desc}"
-        msp.add_text(
-            text,
+        label_id = f"schedule.item_{cb_id.lower()}"
+        display_text = text_overrides.get(label_id, text)
+        t_ent = msp.add_text(
+            display_text,
             dxfattribs={"height": FONT_H_SMALL, "layer": "NOTES", "color": colors.WHITE}
-        ).set_placement((rx, ry), align=TextEntityAlignment.MIDDLE_LEFT)
+        )
+        t_ent.set_placement((rx, ry), align=TextEntityAlignment.MIDDLE_LEFT)
+        t_ent.label_id = label_id
         ry -= 8.0
 
     # ── Bounding box corner lines (defines the margin extents cleanly) ───────
-    msp.add_line((min_x, min_y), (min_x + 0.1, min_y), dxfattribs={"layer": "TITLE", "color": 250})
-    msp.add_line((max_x, max_y), (max_x - 0.1, max_y), dxfattribs={"layer": "TITLE", "color": 250})
+    msp.add_line((min_x, min_y), (min_x + 0.1, min_y), dxfattribs={"layer": "PAGE_MARGIN", "color": 250})
+    msp.add_line((max_x, max_y), (max_x - 0.1, max_y), dxfattribs={"layer": "PAGE_MARGIN", "color": 250})
     # Update title horizontal position to align with diagram-only content centroid
     try:
         diagram_layers = {"COMPONENTS", "WIRES_PHASE", "WIRES_NEUTRAL", "WIRES_EARTH", "WIRES_FAULT"}
@@ -1240,6 +1279,33 @@ def export_dxf(parsed_data: dict, output_path: str = None) -> Optional[ezdxf.doc
         height=page_h,
         center=(content_cx, content_cy),
     )
+
+    # ── Apply layout_overrides (group transformations) ────────────────────────
+    layout_overrides = parsed_data.get("layout_overrides", {})
+    if layout_overrides:
+        try:
+            from ezdxf.math import Matrix44
+            groups = ["main_diagram", "title_block", "legend", "load_schedule"]
+            for gname in groups:
+                override = layout_overrides.get(gname)
+                if override:
+                    pos = override.get("position")  # [pos_x, pos_y]
+                    scale = override.get("scale", 1.0)
+                    px = pos[0] if pos else 0.0
+                    py = pos[1] if pos else 0.0
+                    if px != 0.0 or py != 0.0 or scale != 1.0:
+                        m = Matrix44.chain(
+                            Matrix44.scale(scale, scale, 1.0),
+                            Matrix44.translate(px, -py, 0.0)
+                        )
+                        group_entities = get_group_entities(doc, gname)
+                        for ent in group_entities:
+                            try:
+                                ent.transform(m)
+                            except Exception as te:
+                                print(f"Warning: could not transform entity in group {gname}: {te}")
+        except Exception as le:
+            print(f"Warning: failed to apply layout_overrides to DXF: {le}")
 
     if output_path is None:
         return doc
@@ -1326,3 +1392,92 @@ def render_doc_to_pdf(doc: ezdxf.document.Drawing, pdf_path: str) -> None:
     Frontend(ctx, backend).draw_layout(msp, finalize=True)
     fig.savefig(pdf_path, format='pdf', bbox_inches='tight')
     plt.close(fig)
+
+def render_entities_to_svg(doc: ezdxf.document.Drawing, entities: list) -> str:
+    from ezdxf.addons.drawing import RenderContext, Frontend
+    from ezdxf.addons.drawing.svg import SVGBackend
+    from ezdxf.addons.drawing.layout import Page
+    from ezdxf.bbox import extents
+    from ezdxf.math import BoundingBox2d
+    
+    if not entities:
+        return ""
+    backend = SVGBackend()
+    ctx = RenderContext(doc)
+    frontend = Frontend(ctx, backend)
+    frontend.draw_entities(entities)
+    
+    try:
+        bb = extents(entities)
+        x_min, y_min = bb.extmin.x, bb.extmin.y
+        x_max, y_max = bb.extmax.x, bb.extmax.y
+        width = x_max - x_min
+        height = y_max - y_min
+        if width > 0 and height > 0:
+            page = Page(width=width, height=height)
+            bbox2d = BoundingBox2d([(x_min, y_min), (x_max, y_max)])
+            return backend.get_string(page=page, render_box=bbox2d)
+    except Exception as e:
+        print("Failed to render with custom page box:", e)
+        
+    page = Page(width=0, height=0)
+    return backend.get_string(page=page)
+
+def get_group_entities(doc: ezdxf.document.Drawing, group_name: str) -> list:
+    """Classify modelspace entities into four groups: title_block, legend, load_schedule, main_diagram."""
+    from ezdxf.bbox import extents
+    msp = doc.modelspace()
+    
+    # Find overall page bounds to distinguish the Load Schedule
+    overall_bb = extents(msp)
+    min_x = overall_bb.extmin.x
+    max_x = overall_bb.extmax.x
+    
+    rx_threshold = max_x - 120.0
+    
+    entities = []
+    for entity in msp:
+        layer = entity.dxf.layer
+        if layer == "PAGE_MARGIN":
+            continue
+        ent_group = "main_diagram"
+        
+        if layer == "TITLE":
+            ent_group = "title_block"
+        elif layer == "LEGEND":
+            ent_group = "legend"
+        elif layer == "NOTES":
+            x_coord = None
+            if entity.dxftype() == "LINE":
+                x_coord = entity.dxf.start.x
+            elif entity.dxftype() == "TEXT":
+                x_coord = entity.get_placement()[1][0]
+            else:
+                try:
+                    bb = extents([entity])
+                    x_coord = (bb.extmin.x + bb.extmax.x) / 2.0
+                except Exception:
+                    pass
+            
+            if x_coord is not None and x_coord >= rx_threshold:
+                ent_group = "load_schedule"
+            else:
+                ent_group = "main_diagram"
+        else:
+            ent_group = "main_diagram"
+            
+        if ent_group == group_name:
+            entities.append(entity)
+            
+    return entities
+
+def get_group_graphics_and_text(doc: ezdxf.document.Drawing, group_name: str) -> tuple[list, list]:
+    entities = get_group_entities(doc, group_name)
+    graphics = []
+    text_entities = []
+    for ent in entities:
+        if ent.dxftype() in ("TEXT", "MTEXT"):
+            text_entities.append(ent)
+        else:
+            graphics.append(ent)
+    return graphics, text_entities

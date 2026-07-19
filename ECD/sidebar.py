@@ -226,7 +226,13 @@ class Sidebar(QWidget):
     def _reset(self):
         if not hasattr(self.main_window, 'canvas') or not self.main_window.canvas.original_parsed_data:
             return
-        self.main_window.canvas.current_parsed_data = self.main_window.canvas.original_parsed_data.copy()
-        self.main_window.canvas.refresh_diagram()
+        canvas = self.main_window.canvas
+        canvas.current_parsed_data = canvas.original_parsed_data.copy()
+        canvas.current_parsed_data.pop("layout_overrides", None)
+        canvas.current_parsed_data.pop("text_overrides", None)
+        canvas.original_parsed_data.pop("layout_overrides", None)
+        canvas.original_parsed_data.pop("text_overrides", None)
+        canvas.refresh_diagram()
+        self.reset_btn.setEnabled(False)
         if hasattr(self.main_window, 'status'):
             self.main_window.status.showMessage("Diagram reset to original state", 3000)

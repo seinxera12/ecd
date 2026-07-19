@@ -1,55 +1,503 @@
 # diagram_canvas.py
 import json
 import re
+import math
 from PySide6.QtWidgets import *
 from PySide6.QtCore import *
+from PySide6.QtGui import *
+from PySide6.QtSvg import QSvgRenderer
+from PySide6.QtSvgWidgets import QGraphicsSvgItem
 import os
 
-from PySide6.QtSvg import QSvgRenderer
-from PySide6.QtGui import QPainter
+class EditableTextItem(QGraphicsTextItem):
+    def __init__(self, label_id: str, parent_group, parent_view):
+        super().__init__()
+        self.label_id = label_id
+        self.parent_group = parent_group
+        self.parent_view = parent_view
+        
+    def start_editing(self):
+        # Disable parent group event handling so this item can receive mouse focus/clicks
+        self.parent_group.setHandlesChildEvents(False)
+        self.setTextInteractionFlags(Qt.TextInteractionFlag.TextEditorInteraction)
+        self.setFocus(Qt.FocusReason.MouseFocusReason)
+        cursor = self.textCursor()
+        cursor.select(QTextCursor.SelectionType.Document)
+        self.setTextCursor(cursor)
+        
+    def focusOutEvent(self, event):
+        self.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
+        super().focusOutEvent(event)
+        # Re-enable parent group event handling
+        self.parent_group.setHandlesChildEvents(True)
+        new_text = self.toPlainText().strip()
+        self.parent_view.store_text_override(self.label_id, new_text)
 
-class SvgPreviewWidget(QWidget):
-    """Renders an SVG scaled to fit the widget, preserving aspect ratio.
-    scale_factor is a zoom multiplier on top of the fit-to-view base.
-    At scale_factor=1.0 the entire SVG is visible.  When zoomed in
-    beyond 1.0, DiagramCanvas resizes the widget explicitly so that
-    scrollbars appear in the parent QScrollArea.
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self.clearFocus()
+            event.accept()
+        else:
+            super().keyPressEvent(event)
+
+
+class DiagramGroupItem(QGraphicsItemGroup):
+    def __init__(self, name: str, parent_view: QGraphicsView):
+        super().__init__()
+        self.name = name
+        self.parent_view = parent_view
+        
+        self.setFlags(
+            QGraphicsItem.GraphicsItemFlag.ItemIsMovable |
+            QGraphicsItem.GraphicsItemFlag.ItemIsSelectable |
+            QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges
+        )
+        self.setHandlesChildEvents(True)
+        
+        self.is_resizing = False
+        self.active_handle = None
+        self.drag_start_scale = 1.0
+        self.local_anchor = None
+        self.scene_anchor = None
+        self.scene_start_pos = None
+
+    def itemChange(self, change, value):
+        if change == QGraphicsItem.GraphicsItemChange.ItemSelectedChange:
+            self.update()
+        elif change == QGraphicsItem.GraphicsItemChange.ItemPositionChange:
+            scene = self.scene()
+            if scene:
+                scene_rect = scene.sceneRect()
+                s = self.scale()
+                rect = self.boundingRect()
+                
+                L_TL = rect.topLeft()
+                L_BR = rect.bottomRight()
+                
+                min_pos_x = scene_rect.left() - L_TL.x() * s
+                max_pos_x = scene_rect.right() - L_BR.x() * s
+                min_pos_y = scene_rect.top() - L_TL.y() * s
+                max_pos_y = scene_rect.bottom() - L_BR.y() * s
+                
+                if min_pos_x <= max_pos_x:
+                    new_x = max(min_pos_x, min(value.x(), max_pos_x))
+                else:
+                    new_x = scene_rect.left() - L_TL.x() * s
+                    
+                if min_pos_y <= max_pos_y:
+                    new_y = max(min_pos_y, min(value.y(), max_pos_y))
+                else:
+                    new_y = scene_rect.top() - L_TL.y() * s
+                    
+                return QPointF(new_x, new_y)
+        return super().itemChange(change, value)
+
+    def paint(self, painter, option, widget):
+        super().paint(painter, option, widget)
+        if self.isSelected():
+            rect = self.boundingRect()
+            
+            # Cosmetic pen for selection bounding box
+            pen = QPen(QColor(0, 150, 255), 1.5, Qt.PenStyle.DashLine)
+            pen.setCosmetic(True)
+            painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(rect)
+            
+            # Cosmetic handles at the corners
+            current_scale = self.scale()
+            sf = 1.0 / current_scale if current_scale > 0.0 else 1.0
+            h_sz = 8.0 * sf
+            
+            painter.setPen(QPen(QColor(0, 150, 255), 1.0))
+            painter.setBrush(QBrush(QColor(255, 255, 255)))
+            
+            corners = [
+                rect.topLeft(),
+                rect.topRight(),
+                rect.bottomLeft(),
+                rect.bottomRight()
+            ]
+            for pt in corners:
+                painter.drawRect(pt.x() - h_sz / 2.0, pt.y() - h_sz / 2.0, h_sz, h_sz)
+
+    def mousePressEvent(self, event):
+        if self.isSelected():
+            rect = self.boundingRect()
+            current_scale = self.scale()
+            sf = 1.0 / current_scale if current_scale > 0.0 else 1.0
+            tolerance = 6.0 * sf
+            
+            click_pos = event.pos()
+            corners = {
+                "top_left": (rect.topLeft(), rect.bottomRight()),
+                "top_right": (rect.topRight(), rect.bottomLeft()),
+                "bottom_left": (rect.bottomLeft(), rect.topRight()),
+                "bottom_right": (rect.bottomRight(), rect.topLeft())
+            }
+            
+            for handle_name, (corner_pt, anchor_pt) in corners.items():
+                diff = click_pos - corner_pt
+                dist = math.hypot(diff.x(), diff.y())
+                if dist <= tolerance:
+                    self.is_resizing = True
+                    self.active_handle = handle_name
+                    self.drag_start_scale = self.scale()
+                    self.local_anchor = anchor_pt
+                    self.scene_anchor = self.mapToScene(anchor_pt)
+                    self.scene_start_pos = self.mapToScene(click_pos)
+                    event.accept()
+                    return
+                    
+        super().mousePressEvent(event)
+
+    def calculate_max_scale(self, scene_anchor, local_anchor):
+        scene = self.scene()
+        if not scene:
+            return 5.0
+        scene_rect = scene.sceneRect()
+        rect = self.boundingRect()
+        
+        corners = [
+            rect.topLeft(),
+            rect.topRight(),
+            rect.bottomLeft(),
+            rect.bottomRight()
+        ]
+        
+        max_scale = 5.0
+        for c in corners:
+            dx = c.x() - local_anchor.x()
+            dy = c.y() - local_anchor.y()
+            
+            if abs(dx) > 0.001:
+                if dx > 0:
+                    s_limit = (scene_rect.right() - scene_anchor.x()) / dx
+                else:
+                    s_limit = (scene_rect.left() - scene_anchor.x()) / dx
+                max_scale = min(max_scale, s_limit)
+                
+            if abs(dy) > 0.001:
+                if dy > 0:
+                    s_limit = (scene_rect.bottom() - scene_anchor.y()) / dy
+                else:
+                    s_limit = (scene_rect.top() - scene_anchor.y()) / dy
+                max_scale = min(max_scale, s_limit)
+                
+        return max(0.2, max_scale)
+
+    def mouseMoveEvent(self, event):
+        if self.is_resizing:
+            scene_pos = event.scenePos()
+            
+            start_diff = self.scene_start_pos - self.scene_anchor
+            d_start = math.hypot(start_diff.x(), start_diff.y())
+            
+            curr_diff = scene_pos - self.scene_anchor
+            d_curr = math.hypot(curr_diff.x(), curr_diff.y())
+            
+            if d_start > 0.1:
+                new_scale = self.drag_start_scale * (d_curr / d_start)
+                max_allowed = self.calculate_max_scale(self.scene_anchor, self.local_anchor)
+                new_scale = min(new_scale, max_allowed)
+                new_scale = max(0.2, min(new_scale, 5.0))
+                self.setScale(new_scale)
+                
+                # Adjust position to keep scene_anchor stationary
+                new_pos_x = self.scene_anchor.x() - new_scale * self.local_anchor.x()
+                new_pos_y = self.scene_anchor.y() - new_scale * self.local_anchor.y()
+                self.setPos(new_pos_x, new_pos_y)
+                
+            event.accept()
+        else:
+            super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if self.is_resizing:
+            self.is_resizing = False
+            self.active_handle = None
+            self.parent_view.store_layout_override(self.name, self.pos(), self.scale())
+            self.parent_view.fit_to_view()
+            event.accept()
+        else:
+            super().mouseReleaseEvent(event)
+            self.parent_view.store_layout_override(self.name, self.pos(), self.scale())
+            self.parent_view.fit_to_view()
+
+    def mouseDoubleClickEvent(self, event):
+        click_pos = event.pos()
+        for child in self.childItems():
+            if isinstance(child, EditableTextItem) and child.contains(child.mapFromParent(click_pos)):
+                child.start_editing()
+                event.accept()
+                return
+        super().mouseDoubleClickEvent(event)
+
+
+class SvgPreviewWidget(QGraphicsView):
+    """QGraphicsView-based interactive viewer for the electrical diagram.
+    Displays the diagram as 4 distinct, selectable, and editable groups.
     """
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.renderer = QSvgRenderer()
+        self.canvas_parent = parent
+        self.scene = QGraphicsScene(self)
+        self.setScene(self.scene)
+        self.setRenderHint(QPainter.RenderHint.Antialiasing)
+        self.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        self.setRenderHint(QPainter.RenderHint.TextAntialiasing)
         self.scale_factor = 1.0
+        
+        # Style to set black background and hide borders
+        self.setBackgroundBrush(QBrush(QColor(0, 0, 0)))
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        
+        self.group_items = {}
+        self.selected_group = None
+        self.scene.selectionChanged.connect(self._on_selection_changed)
 
+    def _on_selection_changed(self):
+        selected = [item for item in self.scene.selectedItems() if isinstance(item, DiagramGroupItem)]
+        newly_selected = None
+        for item in selected:
+            if item != self.selected_group:
+                newly_selected = item
+                break
+                
+        if newly_selected:
+            if self.selected_group and self.selected_group != newly_selected:
+                self.scene.blockSignals(True)
+                self.selected_group.setSelected(False)
+                self.scene.blockSignals(False)
+            self.selected_group = newly_selected
+        else:
+            if not selected:
+                self.selected_group = None
+
+    def store_layout_override(self, group_name: str, pos: QPointF, scale: float):
+        if self.canvas_parent and self.canvas_parent.current_parsed_data is not None:
+            data = self.canvas_parent.current_parsed_data
+            overrides = data.setdefault("layout_overrides", {})
+            overrides[group_name] = {
+                "position": [pos.x(), pos.y()],
+                "scale": scale
+            }
+            # Enable the reset button if it exists
+            if hasattr(self.canvas_parent, "parent_window") and self.canvas_parent.parent_window:
+                win = self.canvas_parent.parent_window
+                if hasattr(win, "sidebar") and win.sidebar:
+                    win.sidebar.reset_btn.setEnabled(True)
+
+    def store_text_override(self, label_id: str, new_text: str):
+        if self.canvas_parent and self.canvas_parent.current_parsed_data is not None:
+            data = self.canvas_parent.current_parsed_data
+            overrides = data.setdefault("text_overrides", {})
+            overrides[label_id] = new_text
+            # Enable the reset button if it exists
+            if hasattr(self.canvas_parent, "parent_window") and self.canvas_parent.parent_window:
+                win = self.canvas_parent.parent_window
+                if hasattr(win, "sidebar") and win.sidebar:
+                    win.sidebar.reset_btn.setEnabled(True)
+
+    def fit_to_view(self):
+        rect = self.scene.sceneRect()
+        if rect.width() > 0 and rect.height() > 0 and self.width() > 0 and self.height() > 0:
+            self.fitInView(rect, Qt.AspectRatioMode.KeepAspectRatio)
+        
     def load(self, byte_array: QByteArray) -> bool:
-        res = self.renderer.load(byte_array)
+        """Fallback method using standard single SVG load."""
+        self.scene.clear()
+        self.group_items.clear()
+        
+        renderer = QSvgRenderer(byte_array)
+        if not renderer.isValid():
+            return False
+            
+        self.fallback_renderer = renderer
+        svg_item = QGraphicsSvgItem()
+        svg_item.setSharedRenderer(renderer)
+        self.scene.addItem(svg_item)
         self.scale_factor = 1.0
-        self.updateGeometry()
-        self.update()
-        return res
+        
+        # Fit to view initially
+        self.scene.setSceneRect(self.scene.itemsBoundingRect())
+        self.fitInView(self.scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+        return True
+
+    def load_document(self, doc, layout_overrides: dict) -> bool:
+        """Load the ezdxf document as 4 separate groups into the scene (Phase 1)."""
+        self.scene.clear()
+        self.group_items.clear()
+        self.renderers = []  # Keep references to prevent premature garbage collection
+        
+        if not doc:
+            return False
+            
+        groups = ["main_diagram", "title_block", "legend", "load_schedule"]
+        
+        try:
+            from ezdxf.bbox import extents
+        except ImportError:
+            return False
+            
+        def aci_to_qcolor(aci: int) -> QColor:
+            mapping = {
+                1: QColor(255, 0, 0),      # Red
+                2: QColor(255, 255, 0),    # Yellow
+                3: QColor(0, 255, 0),      # Green
+                4: QColor(0, 255, 255),    # Cyan
+                5: QColor(0, 0, 255),      # Blue
+                6: QColor(255, 0, 255),    # Magenta
+                7: QColor(255, 255, 255),  # White
+                30: QColor(255, 127, 0),   # Orange / L3
+                250: QColor(128, 128, 128) # Grey
+            }
+            return mapping.get(aci, QColor(255, 255, 255))
+            
+        try:
+            from dxf_generator import get_group_graphics_and_text, render_entities_to_svg
+        except ImportError:
+            from ECD.dxf_generator import get_group_graphics_and_text, render_entities_to_svg
+            
+        for gname in groups:
+            graphics, text_ents = get_group_graphics_and_text(doc, gname)
+            
+            group_item = DiagramGroupItem(gname, self)
+            self.scene.addItem(group_item)
+            self.group_items[gname] = group_item
+            
+            override = layout_overrides.get(gname, {})
+            pos_override = override.get("position")
+            scale_override = override.get("scale", 1.0)
+            
+            # 1. Add graphics/backdrop (if any)
+            if graphics:
+                try:
+                    bb = extents(graphics)
+                    x_min, y_min = bb.extmin.x, bb.extmin.y
+                    x_max, y_max = bb.extmax.x, bb.extmax.y
+                    
+                    svg_str = render_entities_to_svg(doc, graphics)
+                    if svg_str:
+                        svg_item = QGraphicsSvgItem()
+                        renderer = QSvgRenderer(QByteArray(svg_str.encode('utf-8')))
+                        self.renderers.append(renderer)
+                        svg_item.setSharedRenderer(renderer)
+                        
+                        # Scale backdrop to match modelspace width and height
+                        target_w = x_max - x_min
+                        target_h = y_max - y_min
+                        default_size = svg_item.boundingRect().size()
+                        if default_size.width() > 0 and default_size.height() > 0:
+                            scale_x = target_w / default_size.width()
+                            scale_y = target_h / default_size.height()
+                            transform = QTransform()
+                            transform.scale(scale_x, scale_y)
+                            svg_item.setTransform(transform)
+                        
+                        # Position backdrop
+                        svg_item.setPos(x_min, -y_max)
+                        group_item.addToGroup(svg_item)
+                except Exception as ge:
+                    print(f"Error rendering graphics for group {gname}: {ge}")
+                    
+            # 2. Add text items
+            for tent in text_ents:
+                align, p1, p2 = tent.get_placement()
+                pos = p1 if align == 0 or p2 is None else p2
+                
+                label_id = getattr(tent, "label_id", None)
+                if label_id:
+                    text_item = EditableTextItem(label_id, group_item, self)
+                else:
+                    text_item = QGraphicsTextItem()
+                text_item.setPlainText(tent.dxf.text)
+                
+                font = QFont("Arial")
+                font.setPointSizeF(tent.dxf.height)
+                text_item.setFont(font)
+                
+                aci = tent.dxf.color
+                if aci == 256 or aci is None:
+                    try:
+                        layer = doc.layers.get(tent.dxf.layer)
+                        aci = layer.dxf.color
+                    except Exception:
+                        aci = 7
+                text_item.setDefaultTextColor(aci_to_qcolor(aci))
+                
+                self.scene.addItem(text_item)
+                
+
+                width = text_item.boundingRect().width()
+                height = text_item.boundingRect().height()
+                
+                align_val = align.value if hasattr(align, "value") else int(align)
+                is_center = align_val in (1, 5, 7, 10, 13)
+                is_right = align_val in (2, 8, 11, 14)
+                is_middle = align_val in (9, 10, 11) or align_val == 5
+                is_bottom = align_val in (12, 13, 14)
+                
+                adj_x = pos.x
+                if is_center:
+                    adj_x -= width / 2.0
+                elif is_right:
+                    adj_x -= width
+                    
+                adj_y = -pos.y
+                if is_middle:
+                    adj_y -= height / 2.0
+                elif is_bottom:
+                    adj_y -= height * 0.8
+                else:
+                    adj_y -= height * 0.8
+                    
+                text_item.setPos(adj_x, adj_y)
+                group_item.addToGroup(text_item)
+                
+            # Apply layout overrides
+            if pos_override:
+                group_item.setPos(pos_override[0], pos_override[1])
+            if scale_override != 1.0:
+                group_item.setScale(scale_override)
+                
+        # Determine and set fixed sceneRect from PAGE_MARGIN layer bounds
+        try:
+            margin_entities = [e for e in doc.modelspace() if e.dxf.layer == "PAGE_MARGIN"]
+            if margin_entities:
+                margin_bb = extents(margin_entities)
+                s_min_x = margin_bb.extmin.x
+                s_max_x = margin_bb.extmax.x
+                s_min_y = -margin_bb.extmax.y
+                s_max_y = -margin_bb.extmin.y
+                self.scene.setSceneRect(s_min_x, s_min_y, s_max_x - s_min_x, s_max_y - s_min_y)
+            else:
+                self.scene.setSceneRect(self.scene.itemsBoundingRect())
+        except Exception as e:
+            print("Failed to set bounded scene rect from PAGE_MARGIN:", e)
+            self.scene.setSceneRect(self.scene.itemsBoundingRect())
+            
+        print(f"Fixed scene.sceneRect() set to: x={self.scene.sceneRect().x():.2f}, y={self.scene.sceneRect().y():.2f}, w={self.scene.sceneRect().width():.2f}, h={self.scene.sceneRect().height():.2f}")
+        
+        self.scale_factor = 1.0
+        rect = self.scene.sceneRect()
+        if rect.width() > 0 and rect.height() > 0 and self.width() > 0 and self.height() > 0:
+            self.fitInView(rect, Qt.AspectRatioMode.KeepAspectRatio)
+        return True
 
     def set_scale(self, scale: float):
         self.scale_factor = max(0.2, min(scale, 5.0))
-        self.updateGeometry()
-        self.update()
+        self.resetTransform()
+        self.scale(self.scale_factor, self.scale_factor)
 
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        if not self.renderer.isValid():
-            return
-        sz = self.renderer.defaultSize()
-        if sz.isEmpty() or self.width() == 0 or self.height() == 0:
-            return
-
-        # Scale SVG to fit widget bounds, preserving aspect ratio
-        scale = min(self.width() / sz.width(), self.height() / sz.height())
-        w = int(sz.width() * scale)
-        h = int(sz.height() * scale)
-
-        # Center in widget
-        x = (self.width() - w) // 2
-        y = (self.height() - h) // 2
-
-        self.renderer.render(painter, QRect(x, y, w, h))
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self.scale_factor <= 1.0:
+            rect = self.scene.sceneRect()
+            if rect.width() > 0 and rect.height() > 0 and self.width() > 0 and self.height() > 0:
+                self.fitInView(rect, Qt.AspectRatioMode.KeepAspectRatio)
 
 class WelcomeWidget(QWidget):
     def __init__(self, parent=None):
@@ -388,7 +836,7 @@ class DiagramCanvas(QWidget):
         self.scroll_area.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.scroll_area.setStyleSheet("background-color: #ffffff; border: none;")
 
-        self.svg_widget = SvgPreviewWidget()
+        self.svg_widget = SvgPreviewWidget(self)
         self.scroll_area.setWidget(self.svg_widget)
         self.stacked_widget.addWidget(self.scroll_area)
 
@@ -565,10 +1013,21 @@ class DiagramCanvas(QWidget):
             import traceback; traceback.print_exc()
             QMessageBox.critical(self, "Generation Error", f"Failed to generate diagram:\n\n{str(e)}")
 
+    def _display_current_diagram(self):
+        """Helper to load the current document into the SvgPreviewWidget (Phase 1)."""
+        if self.current_doc:
+            layout_overrides = {}
+            if self.current_parsed_data:
+                layout_overrides = self.current_parsed_data.setdefault("layout_overrides", {})
+            self.svg_widget.load_document(self.current_doc, layout_overrides)
+        else:
+            self.svg_widget.load(QByteArray(self.current_svg.encode('utf-8')))
+
     def _finalise_generation(self, parsed_data: dict, prompt_text: str, complexity_level: str):
         """Shared final step: build Mermaid, render HTML, kick off async validation."""
-        self.current_parsed_data  = parsed_data
-        self.original_parsed_data = parsed_data.copy()
+        import copy
+        self.current_parsed_data  = copy.deepcopy(parsed_data)
+        self.original_parsed_data = copy.deepcopy(parsed_data)
 
         mermaid_code = self.generator.generate_mermaid_code(parsed_data)
         self._current_mermaid_code = mermaid_code
@@ -578,7 +1037,7 @@ class DiagramCanvas(QWidget):
         try:
             self.current_doc = export_dxf(parsed_data, None)
             self.current_svg = render_doc_to_svg(self.current_doc)
-            self.svg_widget.load(QByteArray(self.current_svg.encode('utf-8')))
+            self._display_current_diagram()
             self._reset_fit_mode()
             self.stacked_widget.setCurrentWidget(self.scroll_area)
         except Exception as e:
@@ -593,9 +1052,9 @@ class DiagramCanvas(QWidget):
                 f"{len(parsed_data.get('components', []))} components. "
                 "Drag boxes · Double-click text · Edit code below.", 6000)
 
-        # Re-enable the sidebar Reset button
+        # Disable the sidebar Reset button on fresh generation baseline
         if self.parent_window and hasattr(self.parent_window, "sidebar"):
-            self.parent_window.sidebar.reset_btn.setEnabled(True)
+            self.parent_window.sidebar.reset_btn.setEnabled(False)
 
         self._last_prompt = prompt_text
         self._run_validation(prompt_text, parsed_data)
@@ -623,7 +1082,7 @@ class DiagramCanvas(QWidget):
             # Re-generate DXF & SVG natively and show in SVG preview
             self.current_doc = export_dxf(parsed_data, None)
             self.current_svg = render_doc_to_svg(self.current_doc)
-            self.svg_widget.load(QByteArray(self.current_svg.encode('utf-8')))
+            self._display_current_diagram()
             self._reset_fit_mode()
             self.stacked_widget.setCurrentWidget(self.scroll_area)
             
@@ -647,7 +1106,7 @@ class DiagramCanvas(QWidget):
             self.code_panel.set_code(mc)
             self.current_doc = export_dxf(self.current_parsed_data, None)
             self.current_svg = render_doc_to_svg(self.current_doc)
-            self.svg_widget.load(QByteArray(self.current_svg.encode('utf-8')))
+            self._display_current_diagram()
             self.stacked_widget.setCurrentWidget(self.scroll_area)
         except Exception as e:
             QMessageBox.critical(self, "Refresh Error", str(e))
@@ -755,7 +1214,7 @@ class DiagramCanvas(QWidget):
             
             self.current_doc = export_dxf(parsed_data, None)
             self.current_svg = render_doc_to_svg(self.current_doc)
-            self.svg_widget.load(QByteArray(self.current_svg.encode('utf-8')))
+            self._display_current_diagram()
             self.stacked_widget.setCurrentWidget(self.scroll_area)
         except Exception as e:
             import traceback; traceback.print_exc()
@@ -831,13 +1290,35 @@ class DiagramCanvas(QWidget):
     def get_current_mermaid_code(self) -> str:
         return self.code_panel.get_code() or self._current_mermaid_code
 
+    def get_updated_document(self):
+        """Regenerate and return an up-to-date ezdxf Document containing all current layout and text overrides."""
+        if self.current_parsed_data:
+            try:
+                from dxf_generator import export_dxf
+            except ImportError:
+                from ECD.dxf_generator import export_dxf
+            self.current_doc = export_dxf(self.current_parsed_data, None)
+        return self.current_doc
+
+    def get_updated_svg(self):
+        """Regenerate and return an up-to-date SVG string containing all current layout and text overrides."""
+        doc = self.get_updated_document()
+        if doc:
+            try:
+                from dxf_generator import render_doc_to_svg
+            except ImportError:
+                from ECD.dxf_generator import render_doc_to_svg
+            self.current_svg = render_doc_to_svg(doc)
+        return self.current_svg
+
     # ── SVG Export ────────────────────────────────────────────────────────────
     def export_svg(self, file_path: str, on_done=None):
         try:
-            if not self.current_svg:
+            svg_data = self.get_updated_svg()
+            if not svg_data:
                 raise ValueError("No generated SVG found in memory.")
             with open(file_path, 'w', encoding='utf-8') as f:
-                f.write(self.current_svg)
+                f.write(svg_data)
             if on_done:
                 on_done(True, f"✓ SVG saved to {file_path}")
         except Exception as e:
@@ -847,9 +1328,10 @@ class DiagramCanvas(QWidget):
     # ── PDF Export ────────────────────────────────────────────────────────────
     def export_pdf(self, file_path: str, on_done=None):
         try:
-            if not self.current_doc:
+            doc = self.get_updated_document()
+            if not doc:
                 raise ValueError("No generated DXF document found in memory.")
-            render_doc_to_pdf(self.current_doc, file_path)
+            render_doc_to_pdf(doc, file_path)
             if on_done:
                 on_done(True, f"✓ PDF saved to {file_path}")
         except Exception as e:
@@ -859,9 +1341,10 @@ class DiagramCanvas(QWidget):
     # ── SVG-only PNG Export (diagram only, no UI chrome) ─────────────────────
     def export_svg_as_png(self, file_path: str, on_done=None):
         try:
-            if not self.current_doc:
+            doc = self.get_updated_document()
+            if not doc:
                 raise ValueError("No generated DXF document found in memory.")
-            render_doc_to_png(self.current_doc, file_path)
+            render_doc_to_png(doc, file_path)
             if on_done:
                 on_done(True, f"✓ PNG saved to {file_path}")
         except Exception as e:
