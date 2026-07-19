@@ -248,8 +248,8 @@ class SvgPreviewWidget(QGraphicsView):
         self.setRenderHint(QPainter.RenderHint.TextAntialiasing)
         self.scale_factor = 1.0
         
-        # Style to set black background and hide borders
-        self.setBackgroundBrush(QBrush(QColor(0, 0, 0)))
+        # Style to set navy/slate background matching export theme (#212830) and hide borders
+        self.setBackgroundBrush(QBrush(QColor("#212830")))
         self.setFrameShape(QFrame.Shape.NoFrame)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -414,6 +414,7 @@ class SvgPreviewWidget(QGraphicsView):
                 else:
                     text_item = QGraphicsTextItem()
                 text_item.setPlainText(tent.dxf.text)
+                text_item.document().setDocumentMargin(0)
                 
                 font = QFont("Arial")
                 font.setPointSizeF(tent.dxf.height)
@@ -430,15 +431,19 @@ class SvgPreviewWidget(QGraphicsView):
                 
                 self.scene.addItem(text_item)
                 
+                fm = QFontMetricsF(font)
+                ascent = fm.ascent()
+                descent = fm.descent()
 
                 width = text_item.boundingRect().width()
                 height = text_item.boundingRect().height()
                 
                 align_val = align.value if hasattr(align, "value") else int(align)
-                is_center = align_val in (1, 5, 7, 10, 13)
-                is_right = align_val in (2, 8, 11, 14)
-                is_middle = align_val in (9, 10, 11) or align_val == 5
-                is_bottom = align_val in (12, 13, 14)
+                is_center = align_val in (2, 5, 8, 11, 14)
+                is_right  = align_val in (3, 9, 12, 15)
+                is_top    = align_val in (13, 14, 15)
+                is_middle = align_val in (5, 10, 11, 12)
+                is_bottom = align_val in (7, 8, 9)
                 
                 adj_x = pos.x
                 if is_center:
@@ -447,12 +452,15 @@ class SvgPreviewWidget(QGraphicsView):
                     adj_x -= width
                     
                 adj_y = -pos.y
-                if is_middle:
-                    adj_y -= height / 2.0
+                if is_top:
+                    adj_y -= 0.0
+                elif is_middle:
+                    adj_y -= (ascent - descent) / 2.0
                 elif is_bottom:
-                    adj_y -= height * 0.8
+                    adj_y -= (ascent + descent)
                 else:
-                    adj_y -= height * 0.8
+                    # Default baseline alignment (LEFT=1, CENTER=2, RIGHT=3)
+                    adj_y -= ascent
                     
                 text_item.setPos(adj_x, adj_y)
                 group_item.addToGroup(text_item)

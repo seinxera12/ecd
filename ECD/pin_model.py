@@ -248,10 +248,20 @@ def get_pin_position(component_id: str, pin_name: str, comp_pos: tuple[float, fl
     base_type = get_base_type(component_id)
     pins_by_mode = COMPONENT_PINS.get(base_type)
     if pins_by_mode is None:
-        pins = [
-            PinDef("L_in", "L", 0.0, 5.0),
-            PinDef("L_out", "L", 0.0, -5.0),
-        ]
+        if phase_mode == "three":
+            pins = [
+                PinDef("L1_in", "L1", -5.0, 10.0),
+                PinDef("L2_in", "L2", 0.0, 10.0),
+                PinDef("L3_in", "L3", 5.0, 10.0),
+                PinDef("L1_out", "L1", -5.0, -10.0),
+                PinDef("L2_out", "L2", 0.0, -10.0),
+                PinDef("L3_out", "L3", 5.0, -10.0),
+            ]
+        else:
+            pins = [
+                PinDef("L_in", "L", 0.0, 10.0),
+                PinDef("L_out", "L", 0.0, -10.0),
+            ]
     else:
         pins = pins_by_mode.get(phase_mode, pins_by_mode.get("single"))
         
@@ -264,7 +274,7 @@ def get_pin_position(component_id: str, pin_name: str, comp_pos: tuple[float, fl
 
 # ── Component Placement/Layout ────────────────────────────────────────────────
 
-def compute_component_positions(parsed_data: dict, phase_mode: str = None) -> dict[str, tuple[float, float]]:
+def compute_component_positions(parsed_data: dict, phase_mode: str = None, start_y: float = None) -> dict[str, tuple[float, float]]:
     """Determine coordinates for all components in parsed_data.
     
     Layout strategy (matches Phase 3 schematic look):
@@ -304,7 +314,8 @@ def compute_component_positions(parsed_data: dict, phase_mode: str = None) -> di
             
     # Vertical coordinates parameters
     H_STEP = 38.0
-    start_y = 100.0
+    if start_y is None:
+        start_y = 100.0
     
     positions: dict[str, tuple[float, float]] = {}
     
@@ -551,24 +562,10 @@ def generate_netlist(parsed_data: dict, component_positions: dict[str, tuple[flo
         # Find wiring rule
         rules = PIN_WIRING_RULES.get((src_base, dst_base), [])
         if not rules:
-            src_pins_dict = COMPONENT_PINS.get(src_base)
-            if src_pins_dict:
-                src_pins = src_pins_dict.get(phase_mode, src_pins_dict.get("single"))
-            else:
-                src_pins = [PinDef("L_in", "L", 0.0, 5.0), PinDef("L_out", "L", 0.0, -5.0)]
-                
-            dst_pins_dict = COMPONENT_PINS.get(dst_base)
-            if dst_pins_dict:
-                dst_pins = dst_pins_dict.get(phase_mode, dst_pins_dict.get("single"))
-            else:
-                dst_pins = [PinDef("L_in", "L", 0.0, 5.0), PinDef("L_out", "L", 0.0, -5.0)]
-                
-            src_has_l_out = any(p.name == "L_out" for p in src_pins)
-            dst_has_l_in = any(p.name == "L_in" for p in dst_pins)
-            if src_has_l_out and dst_has_l_in:
-                rules = [("L_out", "L_in")]
-            elif phase_mode == "three" and any(p.name == "L1_out" for p in src_pins) and any(p.name == "L1_in" for p in dst_pins):
+            if phase_mode == "three":
                 rules = [("L1_out", "L1_in"), ("L2_out", "L2_in"), ("L3_out", "L3_in")]
+            else:
+                rules = [("L_out", "L_in")]
 
         for src_pin, dst_pin in rules:
             # Skip neutral connections if neutral is disabled

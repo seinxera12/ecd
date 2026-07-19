@@ -55,7 +55,8 @@ class Sidebar(QWidget):
             "Describe your electrical system…\n"
             "e.g. 'Main supply, breaker, busbar, neutral bar, earth bar, load circuits at 415V'"
         )
-        self.prompt_text.setMaximumHeight(130)
+        self.prompt_text.setMinimumHeight(240)
+        self.prompt_text.setMaximumHeight(350)
         self.prompt_text.setStyleSheet(
             "border:1px solid #cbd5e0; border-radius:5px; padding:6px; font-size:12px;"
             "color:#000000; background:#ffffff;"
