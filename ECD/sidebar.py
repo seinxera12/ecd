@@ -11,6 +11,12 @@ except ImportError:
     from constants import COMPLEXITY_LEVELS
 
 
+class NoScrollComboBox(QComboBox):
+    """QComboBox that ignores mouse wheel events so sidebar scrolling is not intercepted."""
+    def wheelEvent(self, event):
+        event.ignore()
+
+
 class Sidebar(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -36,16 +42,24 @@ class Sidebar(QWidget):
         self._content = QWidget()
         self._content.setStyleSheet("background: transparent;")
         content_lay = QVBoxLayout(self._content)
-        content_lay.setSpacing(16)
-        content_lay.setContentsMargins(4, 8, 4, 8)
+        content_lay.setSpacing(12)
+        content_lay.setContentsMargins(4, 4, 4, 8)
 
-        lay.addWidget(self._content)
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll_area.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        self.scroll_area.setWidget(self._content)
+        lay.addWidget(self.scroll_area)
+
         self.setMinimumWidth(320)
         self.setMaximumWidth(400)   
 
         title = QLabel("Electrical Diagram Generator")
         title.setFont(QFont("Arial", 13, QFont.Weight.Bold))
-        title.setStyleSheet("color:#2c5282; margin-bottom:8px;")
+        title.setStyleSheet("color:#2c5282; margin-bottom:4px;")
         title.setWordWrap(True)
         content_lay.addWidget(title)
 
@@ -55,8 +69,8 @@ class Sidebar(QWidget):
             "Describe your electrical system…\n"
             "e.g. 'Main supply, breaker, busbar, neutral bar, earth bar, load circuits at 415V'"
         )
-        self.prompt_text.setMinimumHeight(240)
-        self.prompt_text.setMaximumHeight(350)
+        self.prompt_text.setMinimumHeight(140)
+        self.prompt_text.setMaximumHeight(220)
         self.prompt_text.setStyleSheet(
             "border:1px solid #cbd5e0; border-radius:5px; padding:6px; font-size:12px;"
             "color:#000000; background:#ffffff;"
@@ -69,7 +83,7 @@ class Sidebar(QWidget):
         detail_lbl.setStyleSheet("color:#2d3748;")
         detail_row.addWidget(detail_lbl)
 
-        self.complexity_combo = QComboBox()
+        self.complexity_combo = NoScrollComboBox()
         self.complexity_combo.addItems(["Simple", "Neutral", "Standard", "Detailed"])
         self.complexity_combo.setCurrentText("Neutral")
         self.complexity_combo.setStyleSheet("""
@@ -102,7 +116,7 @@ class Sidebar(QWidget):
         content_lay.addWidget(self.complexity_hint)
 
         content_lay.addWidget(QLabel("Quick templates:"))
-        self.tmpl_combo = QComboBox()
+        self.tmpl_combo = NoScrollComboBox()
         self.tmpl_combo.addItems([
             "Basic Distribution",
             "Industrial Panel",
@@ -137,7 +151,17 @@ class Sidebar(QWidget):
         gen_btn.clicked.connect(self._generate)
         content_lay.addWidget(gen_btn)
 
-        self.reset_btn = QPushButton("↺  Reset to Original")
+        self.reset_view_btn = QPushButton("🔍  Reset View")
+        self.reset_view_btn.setStyleSheet("""
+            QPushButton {background:#4a5568;color:#fff;border:none;border-radius:6px;
+                         padding:8px;font-size:12px;margin-top:4px;}
+            QPushButton:hover {background:#2d3748;}
+            QPushButton:disabled {background:#cbd5e0;color:#718096;}
+        """)
+        self.reset_view_btn.clicked.connect(self._reset_view)
+        content_lay.addWidget(self.reset_view_btn)
+
+        self.reset_btn = QPushButton("↺  Revert to Original")
         self.reset_btn.setStyleSheet("""
             QPushButton {background:#63b3ed;color:#fff;border:none;border-radius:6px;
                          padding:8px;font-size:12px;margin-top:4px;}
@@ -224,16 +248,10 @@ class Sidebar(QWidget):
             self.main_window.canvas.generate_from_prompt(prompt, complexity)
             # reset_btn is re-enabled by _finalise_generation once the diagram is ready
 
+    def _reset_view(self):
+        if hasattr(self.main_window, 'canvas') and self.main_window.canvas:
+            self.main_window.canvas.reset_view()
+
     def _reset(self):
-        if not hasattr(self.main_window, 'canvas') or not self.main_window.canvas.original_parsed_data:
-            return
-        canvas = self.main_window.canvas
-        canvas.current_parsed_data = canvas.original_parsed_data.copy()
-        canvas.current_parsed_data.pop("layout_overrides", None)
-        canvas.current_parsed_data.pop("text_overrides", None)
-        canvas.original_parsed_data.pop("layout_overrides", None)
-        canvas.original_parsed_data.pop("text_overrides", None)
-        canvas.refresh_diagram()
-        self.reset_btn.setEnabled(False)
-        if hasattr(self.main_window, 'status'):
-            self.main_window.status.showMessage("Diagram reset to original state", 3000)
+        if hasattr(self.main_window, 'canvas') and self.main_window.canvas:
+            self.main_window.canvas.revert_to_original()

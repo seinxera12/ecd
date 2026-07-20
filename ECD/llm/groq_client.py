@@ -28,7 +28,7 @@ except ImportError:
 
 
 class GroqClient(LLMClientBase):
-    def __init__(self, model: str = "openai/gpt-oss-20b", api_key: str | None = None):
+    def __init__(self, model: str = "openai/gpt-oss-120b", api_key: str | None = None):
         self.model = model
         self.api_key = api_key or os.environ.get("GROQ_API_KEY")
         if not self.api_key:

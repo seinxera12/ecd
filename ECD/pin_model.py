@@ -178,7 +178,7 @@ COMPONENT_PINS: dict[str, dict[str, list[PinDef]]] = {
             PinDef("L1_in", "L1", -5.0, 7.0),
             PinDef("L2_in", "L2", 0.0, 7.0),
             PinDef("L3_in", "L3", 5.0, 7.0),
-            PinDef("N_in", "N", -10.0, 0.0),
+            PinDef("N_in", "N", -5.0, 0.0),
             PinDef("E_in", "E", 0.0, -7.0),
         ]
     }

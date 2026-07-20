@@ -217,12 +217,14 @@ class DiagramGroupItem(QGraphicsItemGroup):
             self.is_resizing = False
             self.active_handle = None
             self.parent_view.store_layout_override(self.name, self.pos(), self.scale())
-            self.parent_view.fit_to_view()
+            if self.parent_view.is_at_100_percent():
+                self.parent_view.fit_to_view()
             event.accept()
         else:
             super().mouseReleaseEvent(event)
             self.parent_view.store_layout_override(self.name, self.pos(), self.scale())
-            self.parent_view.fit_to_view()
+            if self.parent_view.is_at_100_percent():
+                self.parent_view.fit_to_view()
 
     def mouseDoubleClickEvent(self, event):
         click_pos = event.pos()
@@ -246,7 +248,11 @@ class SvgPreviewWidget(QGraphicsView):
         self.setRenderHint(QPainter.RenderHint.Antialiasing)
         self.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         self.setRenderHint(QPainter.RenderHint.TextAntialiasing)
-        self.scale_factor = 1.0
+        self.baseline_scale = 1.0
+        
+        # Configure viewport anchors for cursor-centered zooming
+        self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+        self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         
         # Style to set navy/slate background matching export theme (#212830) and hide borders
         self.setBackgroundBrush(QBrush(QColor("#212830")))
@@ -489,23 +495,108 @@ class SvgPreviewWidget(QGraphicsView):
             
         print(f"Fixed scene.sceneRect() set to: x={self.scene.sceneRect().x():.2f}, y={self.scene.sceneRect().y():.2f}, w={self.scene.sceneRect().width():.2f}, h={self.scene.sceneRect().height():.2f}")
         
-        self.scale_factor = 1.0
         rect = self.scene.sceneRect()
         if rect.width() > 0 and rect.height() > 0 and self.width() > 0 and self.height() > 0:
             self.fitInView(rect, Qt.AspectRatioMode.KeepAspectRatio)
+            self.update_baseline_scale()
         return True
 
-    def set_scale(self, scale: float):
-        self.scale_factor = max(0.2, min(scale, 5.0))
-        self.resetTransform()
-        self.scale(self.scale_factor, self.scale_factor)
+    def update_baseline_scale(self):
+        t_m11 = self.transform().m11()
+        if t_m11 > 0:
+            self.baseline_scale = t_m11
+
+    def get_relative_zoom(self) -> float:
+        if getattr(self, "baseline_scale", 0.0) <= 0.0:
+            return 1.0
+        return self.transform().m11() / self.baseline_scale
+
+    def is_at_100_percent(self) -> bool:
+        return abs(self.get_relative_zoom() - 1.0) < 1e-3
+
+    def reset_view(self):
+        """Reset view to 100% fit-to-page baseline and center the diagram."""
+        rect = self.scene.sceneRect()
+        if rect.width() > 0 and rect.height() > 0 and self.width() > 0 and self.height() > 0:
+            self.fitInView(rect, Qt.AspectRatioMode.KeepAspectRatio)
+            self.update_baseline_scale()
+
+    def fit_to_view(self):
+        if self.is_at_100_percent():
+            self.reset_view()
+
+    def wheelEvent_scale(self, factor: float):
+        current_rel = self.get_relative_zoom()
+        target_rel = current_rel * factor
+
+        if target_rel > 2.5:
+            factor = 2.5 / current_rel
+            target_rel = 2.5
+        elif target_rel < 1.0:
+            factor = 1.0 / current_rel
+            target_rel = 1.0
+
+        if abs(target_rel - current_rel) < 1e-4:
+            return
+
+        if abs(target_rel - 1.0) < 1e-3:
+            self.reset_view()
+        else:
+            self.scale(factor, factor)
+
+    def wheelEvent(self, event):
+        delta = event.angleDelta().y()
+        if delta == 0:
+            return
+        factor = 1.1 if delta > 0 else (1.0 / 1.1)
+        self.wheelEvent_scale(factor)
+        event.accept()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        if self.scale_factor <= 1.0:
+        # exact-match guard: auto-refit on window resize only occurs at 100% baseline
+        if self.is_at_100_percent():
             rect = self.scene.sceneRect()
             if rect.width() > 0 and rect.height() > 0 and self.width() > 0 and self.height() > 0:
                 self.fitInView(rect, Qt.AspectRatioMode.KeepAspectRatio)
+                self.update_baseline_scale()
+
+    def mousePressEvent(self, event):
+        if event.button() in (Qt.MouseButton.RightButton, Qt.MouseButton.MiddleButton):
+            self._is_panning = True
+            self._pan_start = event.pos()
+            self._has_panned = False
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if getattr(self, "_is_panning", False):
+            delta = event.pos() - self._pan_start
+            if abs(delta.x()) > 0 or abs(delta.y()) > 0:
+                self._has_panned = True
+            self._pan_start = event.pos()
+            self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - delta.x())
+            self.verticalScrollBar().setValue(self.verticalScrollBar().value() - delta.y())
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if getattr(self, "_is_panning", False):
+            self._is_panning = False
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def contextMenuEvent(self, event):
+        if getattr(self, "_has_panned", False):
+            self._has_panned = False
+            event.accept()
+            return
+        super().contextMenuEvent(event)
 
 class WelcomeWidget(QWidget):
     def __init__(self, parent=None):
@@ -839,14 +930,8 @@ class DiagramCanvas(QWidget):
         self.loading_widget = LoadingWidget()
         self.stacked_widget.addWidget(self.loading_widget)
 
-        self.scroll_area = QScrollArea()
-        self.scroll_area.setWidgetResizable(True)
-        self.scroll_area.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.scroll_area.setStyleSheet("background-color: #ffffff; border: none;")
-
         self.svg_widget = SvgPreviewWidget(self)
-        self.scroll_area.setWidget(self.svg_widget)
-        self.stacked_widget.addWidget(self.scroll_area)
+        self.stacked_widget.addWidget(self.svg_widget)
 
         # Lightweight stub — stores mermaid code for .mmd export / get_current_mermaid_code
         # without rendering any UI.  A full interactive editor will be added in v2.
@@ -1047,7 +1132,7 @@ class DiagramCanvas(QWidget):
             self.current_svg = render_doc_to_svg(self.current_doc)
             self._display_current_diagram()
             self._reset_fit_mode()
-            self.stacked_widget.setCurrentWidget(self.scroll_area)
+            self.stacked_widget.setCurrentWidget(self.svg_widget)
         except Exception as e:
             import traceback; traceback.print_exc()
             QMessageBox.warning(self, "Render Error", f"Failed to render DXF preview:\n\n{e}")
@@ -1092,7 +1177,7 @@ class DiagramCanvas(QWidget):
             self.current_svg = render_doc_to_svg(self.current_doc)
             self._display_current_diagram()
             self._reset_fit_mode()
-            self.stacked_widget.setCurrentWidget(self.scroll_area)
+            self.stacked_widget.setCurrentWidget(self.svg_widget)
             
             # Re-run validation on the new code
             prompt = self.current_parsed_data.get("prompt", self._last_prompt) \
@@ -1115,7 +1200,7 @@ class DiagramCanvas(QWidget):
             self.current_doc = export_dxf(self.current_parsed_data, None)
             self.current_svg = render_doc_to_svg(self.current_doc)
             self._display_current_diagram()
-            self.stacked_widget.setCurrentWidget(self.scroll_area)
+            self.stacked_widget.setCurrentWidget(self.svg_widget)
         except Exception as e:
             QMessageBox.critical(self, "Refresh Error", str(e))
 
@@ -1223,7 +1308,7 @@ class DiagramCanvas(QWidget):
             self.current_doc = export_dxf(parsed_data, None)
             self.current_svg = render_doc_to_svg(self.current_doc)
             self._display_current_diagram()
-            self.stacked_widget.setCurrentWidget(self.scroll_area)
+            self.stacked_widget.setCurrentWidget(self.svg_widget)
         except Exception as e:
             import traceback; traceback.print_exc()
             QMessageBox.warning(self, "Fix Render Error", f"Failed to render corrected diagram:\n\n{e}")
@@ -1237,63 +1322,67 @@ class DiagramCanvas(QWidget):
                 "✓ Diagram patched by LLM — re-validating…", 4000
             )
     
-        # Re-run validation for display only.
-        # findingsReady is NOT reconnected to _on_validation_issues_found here,
-        # so there is no fix loop — only show_result and set_findings are connected.
         prompt = self.current_parsed_data.get("prompt", self._last_prompt) \
                 if self.current_parsed_data else self._last_prompt
         self._run_validation(prompt, self.current_parsed_data)
-    
     
     def _on_fix_failed(self, error_msg: str):
         """Surface the error in the validation panel without touching the diagram."""
         self.validation_panel.show_fix_error(error_msg)
         if self.parent_window and hasattr(self.parent_window, "status"):
             self.parent_window.status.showMessage(f"Fix failed: {error_msg[:80]}", 5000)
- 
-    
+
+    def reset_view(self):
+        """Reset view to 100% fit-to-page baseline and center the diagram."""
+        self.svg_widget.reset_view()
+
+    def revert_to_original(self):
+        """Restore layout_overrides and text_overrides to session baseline without altering zoom or pan position."""
+        if not self.original_parsed_data:
+            return
+
+        # 1. Capture current view transform and scene center point
+        current_transform = self.svg_widget.transform()
+        center_scene_pt = self.svg_widget.mapToScene(self.svg_widget.viewport().rect().center())
+        is_zoomed = not self.svg_widget.is_at_100_percent()
+
+        # 2. Reset parsed data to session baseline
+        import copy
+        self.current_parsed_data = copy.deepcopy(self.original_parsed_data)
+        self.current_parsed_data.pop("layout_overrides", None)
+        self.current_parsed_data.pop("text_overrides", None)
+        self.original_parsed_data.pop("layout_overrides", None)
+        self.original_parsed_data.pop("text_overrides", None)
+
+        # 3. Re-render DXF and redisplay
+        self.current_doc = export_dxf(self.current_parsed_data, None)
+        self.current_svg = render_doc_to_svg(self.current_doc)
+        self._display_current_diagram()
+
+        # 4. If zoomed in, preserve exact view transform and pan center
+        if is_zoomed:
+            self.svg_widget.setTransform(current_transform)
+            self.svg_widget.centerOn(center_scene_pt)
+
+        # Disable the Revert to Original button since data is now at session baseline
+        if self.parent_window and hasattr(self.parent_window, "sidebar"):
+            self.parent_window.sidebar.reset_btn.setEnabled(False)
+
+        if self.parent_window and hasattr(self.parent_window, "status"):
+            self.parent_window.status.showMessage("Diagram data reverted to original state", 3000)
+
     def zoom_in(self):
-        self.svg_widget.scale_factor = min(self.svg_widget.scale_factor * 1.25, 5.0)
-        self._apply_zoom()
+        self.svg_widget.wheelEvent_scale(1.1)
 
     def zoom_out(self):
-        new_scale = self.svg_widget.scale_factor / 1.25
-        if new_scale < 1.05:
-            new_scale = 1.0
-        self.svg_widget.scale_factor = max(new_scale, 0.2)
-        self._apply_zoom()
+        self.svg_widget.wheelEvent_scale(1.0 / 1.1)
 
     def reset_zoom(self):
-        self.svg_widget.scale_factor = 1.0
-        self._apply_zoom()
+        self.reset_view()
 
     def _reset_fit_mode(self):
         """Restore fit-to-view mode (called on new generation / code apply)."""
-        self.svg_widget.scale_factor = 1.0
-        self.svg_widget.setMinimumSize(0, 0)
-        self.svg_widget.setMaximumSize(16777215, 16777215)
-        self.scroll_area.setWidgetResizable(True)
-        self.svg_widget.update()
-
-    def _apply_zoom(self):
-        """Switch between fit-to-view and scrollable-zoom modes."""
-        zf = self.svg_widget.scale_factor
-        if zf <= 1.0:
-            # Fit-to-view: widget fills viewport, SVG scales to fit
-            self.svg_widget.setMinimumSize(0, 0)
-            self.svg_widget.setMaximumSize(16777215, 16777215)
-            self.scroll_area.setWidgetResizable(True)
-        else:
-            # Zoomed: widget sized larger than viewport so scrollbars appear
-            self.scroll_area.setWidgetResizable(False)
-            vp = self.scroll_area.viewport().size()
-            sz = self.svg_widget.renderer.defaultSize()
-            if not sz.isEmpty() and vp.height() > 0:
-                fit_scale = min(vp.width() / sz.width(), vp.height() / sz.height())
-                w = int(sz.width() * fit_scale * zf)
-                h = int(sz.height() * fit_scale * zf)
-                self.svg_widget.setFixedSize(w, h)
-        self.svg_widget.update()
+        self.svg_widget.reset_view()
 
     def get_current_mermaid_code(self) -> str:
         return self.code_panel.get_code() or self._current_mermaid_code

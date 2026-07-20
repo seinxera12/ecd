@@ -823,8 +823,8 @@ def export_dxf(parsed_data: dict, output_path: str = None) -> Optional[ezdxf.doc
             # Labels for nbar/ebar are drawn at the top of the vertical rails above the figure.
             pass
         else:
-            # Shift busbar label up slightly to prevent overlapping the horizontal wire
-            y_offset = 7.0 if cid == "bus" else 0.0
+            # Shift busbar label up to prevent overlapping the horizontal wire
+            y_offset = 9.5 if cid == "bus" else 0.0
             if base_type == "outcb":
                 x_offset = 8.0 if phase_mode == "three" else 5.0
             else:
@@ -1558,6 +1558,24 @@ def mermaid_to_dxf(mermaid_code: str, output_path: str):
     parsed_data = normalize_for_dxf(nodes, edges)
     export_dxf(parsed_data, output_path)
 
+def _get_cjk_font_face():
+    """Find system Japanese CJK font face for ezdxf rendering context."""
+    import os
+    from pathlib import Path
+    from ezdxf.fonts import font_manager
+    cjk_candidates = [
+        "msgothic.ttc", "yugothm.ttc", "meiryo.ttc", "YuGothM.ttc",
+        "msmincho.ttc", "NotoSansCJK-Regular.ttc", "TakaoPGothic.ttf"
+    ]
+    for f in cjk_candidates:
+        path = os.path.join("C:/Windows/Fonts", f)
+        if os.path.exists(path):
+            try:
+                return font_manager.get_ttf_font_face(Path(path))
+            except Exception:
+                pass
+    return None
+
 def render_doc_to_svg(doc: ezdxf.document.Drawing) -> str:
     from ezdxf.addons.drawing import RenderContext, Frontend
     from ezdxf.addons.drawing.svg import SVGBackend
@@ -1566,6 +1584,10 @@ def render_doc_to_svg(doc: ezdxf.document.Drawing) -> str:
     msp = doc.modelspace()
     backend = SVGBackend()
     ctx = RenderContext(doc)
+    cjk_face = _get_cjk_font_face()
+    if cjk_face:
+        for key in list(ctx.fonts.keys()):
+            ctx.fonts[key] = cjk_face
     Frontend(ctx, backend).draw_layout(msp, finalize=True)
     page = Page(width=0, height=0)
     return backend.get_string(page=page)
@@ -1579,6 +1601,10 @@ def render_doc_to_png(doc: ezdxf.document.Drawing, png_path: str) -> None:
     fig = plt.figure(figsize=(10, 10))
     ax = fig.add_axes([0, 0, 1, 1])
     ctx = RenderContext(doc)
+    cjk_face = _get_cjk_font_face()
+    if cjk_face:
+        for key in list(ctx.fonts.keys()):
+            ctx.fonts[key] = cjk_face
     backend = MatplotlibBackend(ax)
     Frontend(ctx, backend).draw_layout(msp, finalize=True)
     fig.savefig(png_path, dpi=200, bbox_inches='tight')
@@ -1593,6 +1619,10 @@ def render_doc_to_pdf(doc: ezdxf.document.Drawing, pdf_path: str) -> None:
     fig = plt.figure(figsize=(10, 10))
     ax = fig.add_axes([0, 0, 1, 1])
     ctx = RenderContext(doc)
+    cjk_face = _get_cjk_font_face()
+    if cjk_face:
+        for key in list(ctx.fonts.keys()):
+            ctx.fonts[key] = cjk_face
     backend = MatplotlibBackend(ax)
     Frontend(ctx, backend).draw_layout(msp, finalize=True)
     fig.savefig(pdf_path, format='pdf', bbox_inches='tight')
