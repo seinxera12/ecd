@@ -126,7 +126,7 @@ class MainWindow(QMainWindow):
         self.status.showMessage("New diagram started", 2000)
 
     def _get_renders_default_path(self, filename: str) -> str:
-        renders_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "renders")
+        renders_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "renders", "demo")
         os.makedirs(renders_dir, exist_ok=True)
         return os.path.join(renders_dir, filename)
 

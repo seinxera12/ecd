@@ -234,6 +234,30 @@ class PinModelTests(unittest.TestCase):
         ebar_conn_1 = next(c for c in netlist["connections"] if c["src_component"] == "ebar" and c["dst_component"] == "load_1")
         self.assertEqual(ebar_conn_1["src_pos"], [-60.0, load_1_y - 4.0])
 
+    def test_incompatible_connections_skipped(self):
+        from ECD.dxf_generator import ensure_connections
+        parsed_data = {
+            "components": [
+                ("supply", "Supply"),
+                ("maincb", "Main Breaker"),
+                ("ebar", "Earth Bar"),
+                ("loads", "Loads")
+            ],
+            "connections": [
+                ("supply", "maincb"),
+                ("maincb", "loads"),
+                ("maincb", "ebar"),     # Incompatible connection
+                ("ebar", "rcd"),        # Incompatible connection
+            ],
+            "voltage": "230V",
+            "phase_hint": "single"
+        }
+        connections = ensure_connections(parsed_data)
+        # Verify the incompatible connections are skipped
+        self.assertIn(("supply", "maincb"), connections)
+        self.assertNotIn(("maincb", "ebar"), connections)
+        self.assertNotIn(("ebar", "rcd"), connections)
+
 
 if __name__ == "__main__":
     unittest.main()

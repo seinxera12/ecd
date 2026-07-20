@@ -432,6 +432,50 @@ def ensure_connections(parsed_data: dict) -> list[tuple[str, str]]:
             filtered_connections.append((src, dst))
         connections = filtered_connections
 
+    # Filter out incompatible connections that lack wiring rules and cannot support the fallback L wire (e.g. ebar/nbar)
+    try:
+        from ECD.pin_model import COMPONENT_PINS, PIN_WIRING_RULES, determine_phase_mode
+    except ImportError:
+        from pin_model import COMPONENT_PINS, PIN_WIRING_RULES, determine_phase_mode
+
+    voltage = parsed_data.get("voltage", "")
+    phase_hint = parsed_data.get("phase_hint") or parsed_data.get("flags", {}).get("phase_hint")
+    phase_mode = determine_phase_mode(voltage, phase_hint)
+
+    valid_connections = []
+    for src, dst in connections:
+        src_base = get_base_type(src)
+        dst_base = get_base_type(dst)
+        
+        # Check if a predefined rule exists
+        if (src_base, dst_base) in PIN_WIRING_RULES:
+            valid_connections.append((src, dst))
+            continue
+            
+        # Check if fallback Phase (L) pins are available on both components
+        src_pins_dict = COMPONENT_PINS.get(src_base)
+        dst_pins_dict = COMPONENT_PINS.get(dst_base)
+        
+        if not src_pins_dict or not dst_pins_dict:
+            valid_connections.append((src, dst))
+            continue
+            
+        src_pins = src_pins_dict.get(phase_mode, src_pins_dict.get("single", []))
+        dst_pins = dst_pins_dict.get(phase_mode, dst_pins_dict.get("single", []))
+        
+        # Need L_out (or L1_out/L2_out/L3_out) on src
+        has_src_l = any(p.name.startswith("L") and p.name.endswith("_out") for p in src_pins)
+        # Need L_in (or L1_in/L2_in/L3_in) on dst
+        has_dst_l = any(p.name.startswith("L") and p.name.endswith("_in") for p in dst_pins)
+        
+        if has_src_l and has_dst_l:
+            valid_connections.append((src, dst))
+        else:
+            # Suppress incompatible connection to avoid crashing
+            print(f"Skipping incompatible connection '{src}' -> '{dst}' (no L pins available for fallback)")
+            
+    connections = valid_connections
+
     return connections
 
 
@@ -1184,25 +1228,25 @@ def export_dxf(parsed_data: dict, output_path: str = None) -> Optional[ezdxf.doc
 
     # ── Fault path: ebar → rcd → maincb (dashed magenta) ────────────────────
     if show_faults and "ebar" in box_positions:
-        
         rcd_key = "rcd" if "rcd" in box_positions else ("rcbo" if "rcbo" in box_positions else None)
-        p_start = pin_model.get_pin_position("ebar", "E_out", box_positions["ebar"])
-        rcd_pos = box_positions[rcd_key]
-        maincb_pos = box_positions["maincb"]
-        
-        # Connect ebar.E_out -> (mid_x, rcd_y) -> (0, maincb_y) using bend logic
-        mid_x = ebar_x / 2.0
-        w1 = route_wire_bend(p_start, (mid_x, rcd_pos[1]))
-        w2 = route_wire_bend((mid_x, rcd_pos[1]), (0.0, maincb_pos[1]))
-        
-        for p_s, p_e in zip(w1, w1[1:]):
-            _draw_wire(msp, [p_s, p_e], color=COL_FAULT, layer="WIRES_FAULT", linetype="DASHED", lineweight=13)
-        for p_s, p_e in zip(w2, w2[1:]):
-            _draw_wire(msp, [p_s, p_e], color=COL_FAULT, layer="WIRES_FAULT", linetype="DASHED", lineweight=13)
+        if rcd_key and "maincb" in box_positions:
+            p_start = pin_model.get_pin_position("ebar", "E_out", box_positions["ebar"])
+            rcd_pos = box_positions[rcd_key]
+            maincb_pos = box_positions["maincb"]
             
-        # Draw label at fault_x
-        fl_lbl = "故障電流経路 (E)" if language == "ja" else "Fault Current Path (E)"
-        _draw_label(msp, mid_x + 20.0, rcd_pos[1] - 4.0, fl_lbl, color=COL_FAULT)
+            # Connect ebar.E_out -> (mid_x, rcd_y) -> (0, maincb_y) using bend logic
+            mid_x = ebar_x / 2.0
+            w1 = route_wire_bend(p_start, (mid_x, rcd_pos[1]))
+            w2 = route_wire_bend((mid_x, rcd_pos[1]), (0.0, maincb_pos[1]))
+        
+            for p_s, p_e in zip(w1, w1[1:]):
+                _draw_wire(msp, [p_s, p_e], color=COL_FAULT, layer="WIRES_FAULT", linetype="DASHED", lineweight=13)
+            for p_s, p_e in zip(w2, w2[1:]):
+                _draw_wire(msp, [p_s, p_e], color=COL_FAULT, layer="WIRES_FAULT", linetype="DASHED", lineweight=13)
+                
+            # Draw label at fault_x
+            fl_lbl = "故障電流経路 (E)" if language == "ja" else "Fault Current Path (E)"
+            _draw_label(msp, mid_x + 20.0, rcd_pos[1] - 4.0, fl_lbl, color=COL_FAULT)
 
     # Compile legend items early to calculate required height
     if phase_mode == "three":
@@ -1458,6 +1502,11 @@ def export_dxf(parsed_data: dict, output_path: str = None) -> Optional[ezdxf.doc
     # ── Bounding box corner lines (defines the margin extents cleanly around content) ───────
     final_min_y = min(leg_y0, sched_y0) - 15.0
     final_max_y = max_main_y + 35.0  # Includes Title Block top line + 15mm margin
+
+    ex0 = min_x
+    ey0 = final_min_y
+    ex1 = max_x
+    ey1 = final_max_y
 
     msp.add_line((min_x, final_min_y), (min_x + 0.1, final_min_y), dxfattribs={"layer": "PAGE_MARGIN", "color": 250})
     msp.add_line((max_x, final_max_y), (max_x - 0.1, final_max_y), dxfattribs={"layer": "PAGE_MARGIN", "color": 250})

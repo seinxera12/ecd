@@ -443,7 +443,7 @@ class ValidationPanel(QWidget):
         """)
         self.icon_lbl.setText("⏳")
         self.title_lbl.setText("Applying fixes via LLM…")
-        self.findings_lbl.setText("The local LLM is patching the diagram structure. This normally takes 10–15 seconds. Please wait.")
+        self.findings_lbl.setText("The LLM is patching the diagram structure. This normally takes 10–15 seconds. Please wait.")
         self.fix_btn.setEnabled(False)
         self.show()
 

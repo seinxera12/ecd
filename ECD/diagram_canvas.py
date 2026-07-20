@@ -15,8 +15,16 @@ class EditableTextItem(QGraphicsTextItem):
         self.label_id = label_id
         self.parent_group = parent_group
         self.parent_view = parent_view
+        self._is_editing = False
         
     def start_editing(self):
+        # First, stop any other items currently in edit mode across the whole scene
+        if self.scene():
+            for item in self.scene().items():
+                if isinstance(item, EditableTextItem) and item is not self and item._is_editing:
+                    item.stop_editing()
+        
+        self._is_editing = True
         # Disable parent group event handling so this item can receive mouse focus/clicks
         self.parent_group.setHandlesChildEvents(False)
         self.setTextInteractionFlags(Qt.TextInteractionFlag.TextEditorInteraction)
@@ -25,13 +33,25 @@ class EditableTextItem(QGraphicsTextItem):
         cursor.select(QTextCursor.SelectionType.Document)
         self.setTextCursor(cursor)
         
-    def focusOutEvent(self, event):
+    def stop_editing(self):
+        """Exit edit mode: clear selection highlight, disable text interaction,
+        re-enable parent group event handling, and commit text override."""
+        if not self._is_editing:
+            return
+        self._is_editing = False
+        # Clear text selection highlight
+        cursor = self.textCursor()
+        cursor.clearSelection()
+        self.setTextCursor(cursor)
         self.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
-        super().focusOutEvent(event)
         # Re-enable parent group event handling
         self.parent_group.setHandlesChildEvents(True)
         new_text = self.toPlainText().strip()
         self.parent_view.store_text_override(self.label_id, new_text)
+
+    def focusOutEvent(self, event):
+        self.stop_editing()
+        super().focusOutEvent(event)
 
     def keyPressEvent(self, event):
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
@@ -201,6 +221,9 @@ class DiagramGroupItem(QGraphicsItemGroup):
                 max_allowed = self.calculate_max_scale(self.scene_anchor, self.local_anchor)
                 new_scale = min(new_scale, max_allowed)
                 new_scale = max(0.2, min(new_scale, 5.0))
+                
+                # Invalidate old bounding region BEFORE changing geometry
+                self.prepareGeometryChange()
                 self.setScale(new_scale)
                 
                 # Adjust position to keep scene_anchor stationary
@@ -217,6 +240,9 @@ class DiagramGroupItem(QGraphicsItemGroup):
             self.is_resizing = False
             self.active_handle = None
             self.parent_view.store_layout_override(self.name, self.pos(), self.scale())
+            # Force full scene repaint to clear any stale paint residue
+            if self.scene():
+                self.scene().update()
             if self.parent_view.is_at_100_percent():
                 self.parent_view.fit_to_view()
             event.accept()
@@ -259,6 +285,8 @@ class SvgPreviewWidget(QGraphicsView):
         self.setFrameShape(QFrame.Shape.NoFrame)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # Use FullViewportUpdate to prevent stale paint residue after group resize/transforms
+        self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.FullViewportUpdate)
         
         self.group_items = {}
         self.selected_group = None
@@ -475,6 +503,7 @@ class SvgPreviewWidget(QGraphicsView):
             if pos_override:
                 group_item.setPos(pos_override[0], pos_override[1])
             if scale_override != 1.0:
+                group_item.prepareGeometryChange()
                 group_item.setScale(scale_override)
                 
         # Determine and set fixed sceneRect from PAGE_MARGIN layer bounds
