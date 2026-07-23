@@ -55,8 +55,6 @@ class GroqClient(LLMClientBase):
                 "json_schema": {"name": "diagram_schema", "schema": schema, "strict": True},
             }
 
-
-
         resp = requests.post(
             self.url,
             headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
@@ -118,3 +116,8 @@ Return ONLY valid JSON matching the required schema -- no explanation, no markdo
             result = json.loads(raw[start:end])
 
         return result
+
+    def chat(self, system_prompt: str, user_prompt: str, max_tokens: int = 1024) -> str:
+        """Plain text chat via Groq — no JSON schema, returns raw text."""
+        print(f"[groq] chat | model={self.model}")
+        return self._call(system_prompt, user_prompt, schema=None, max_tokens=max_tokens)

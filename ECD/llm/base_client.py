@@ -26,3 +26,12 @@ class LLMClientBase(ABC):
             }
         """
         raise NotImplementedError
+
+    @abstractmethod
+    def chat(self, system_prompt: str, user_prompt: str, max_tokens: int = 1024) -> str:
+        """
+        Plain text chat completion — no JSON schema, no structured output.
+        Used by ValidationWorker (semantic validation) and MermaidFixWorker (diagram repair).
+        Returns the model's raw text response as a string.
+        """
+        raise NotImplementedError

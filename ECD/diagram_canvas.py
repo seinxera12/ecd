@@ -543,12 +543,20 @@ class SvgPreviewWidget(QGraphicsView):
     def is_at_100_percent(self) -> bool:
         return abs(self.get_relative_zoom() - 1.0) < 1e-3
 
+    def _notify_zoom_changed(self):
+        is_zoomed = not self.is_at_100_percent()
+        if getattr(self, "canvas_parent", None) and hasattr(self.canvas_parent, "parent_window"):
+            pw = self.canvas_parent.parent_window
+            if pw and hasattr(pw, "sidebar") and pw.sidebar:
+                pw.sidebar.reset_view_btn.setEnabled(is_zoomed)
+
     def reset_view(self):
         """Reset view to 100% fit-to-page baseline and center the diagram."""
         rect = self.scene.sceneRect()
         if rect.width() > 0 and rect.height() > 0 and self.width() > 0 and self.height() > 0:
             self.fitInView(rect, Qt.AspectRatioMode.KeepAspectRatio)
             self.update_baseline_scale()
+        self._notify_zoom_changed()
 
     def fit_to_view(self):
         if self.is_at_100_percent():
@@ -572,6 +580,7 @@ class SvgPreviewWidget(QGraphicsView):
             self.reset_view()
         else:
             self.scale(factor, factor)
+            self._notify_zoom_changed()
 
     def wheelEvent(self, event):
         delta = event.angleDelta().y()
@@ -589,6 +598,7 @@ class SvgPreviewWidget(QGraphicsView):
             if rect.width() > 0 and rect.height() > 0 and self.width() > 0 and self.height() > 0:
                 self.fitInView(rect, Qt.AspectRatioMode.KeepAspectRatio)
                 self.update_baseline_scale()
+        self._notify_zoom_changed()
 
     def mousePressEvent(self, event):
         if event.button() in (Qt.MouseButton.RightButton, Qt.MouseButton.MiddleButton):
@@ -950,8 +960,17 @@ class DiagramCanvas(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
 
+        self.splitter = QSplitter(Qt.Orientation.Vertical)
+        self.splitter.setChildrenCollapsible(False)
+        self.splitter.setStyleSheet("""
+            QSplitter::handle:vertical {
+                background: transparent;
+                height: 4px;
+            }
+        """)
+
         self.stacked_widget = QStackedWidget()
-        lay.addWidget(self.stacked_widget, 1)  # stretch=1: diagram gets all available space
+        self.splitter.addWidget(self.stacked_widget)
 
         self.welcome_widget = WelcomeWidget()
         self.stacked_widget.addWidget(self.welcome_widget)
@@ -972,7 +991,13 @@ class DiagramCanvas(QWidget):
         })()
 
         self.validation_panel = ValidationPanel()
-        lay.addWidget(self.validation_panel)
+        self.splitter.addWidget(self.validation_panel)
+
+        self.splitter.setStretchFactor(0, 1)
+        self.splitter.setStretchFactor(1, 0)
+        self.splitter.setSizes([600,150 ])
+
+        lay.addWidget(self.splitter)
         # "Fix Issues" button in the panel triggers auto-correction using stored findings
         self.validation_panel.fixRequested.connect(
             lambda: self._on_validation_issues_found(self.validation_panel._current_findings)
@@ -988,22 +1013,53 @@ class DiagramCanvas(QWidget):
 
     def _show_welcome(self):
         """Display a branded welcome screen before any diagram is generated."""
-        # code_panel is a no-op stub; nothing to hide
         self.stacked_widget.setCurrentWidget(self.welcome_widget)
+        self.current_parsed_data = None
+        self.original_parsed_data = None
+        self.current_doc = None
+        self.current_svg = ""
+        self._current_mermaid_code = ""
+        val_worker = getattr(self, "_validation_worker", None)
+        if val_worker is not None and val_worker.isRunning():
+            val_worker.requestInterruption()
+            val_worker.quit()
+            val_worker.wait(1000)
+            self._validation_worker = None
+        if hasattr(self, "validation_panel") and self.validation_panel:
+            self.validation_panel._current_findings = []
+            self.validation_panel.findings_lbl.setText("")
+            self.validation_panel.fix_btn.setEnabled(False)
+            self.validation_panel.hide()
 
 
     def _show_loading(self):
         """Replace the canvas with an animated loading screen while generating."""
+        val_worker = getattr(self, "_validation_worker", None)
+        if val_worker is not None and val_worker.isRunning():
+            val_worker.requestInterruption()
+            val_worker.quit()
+            val_worker.wait(1000)
+            self._validation_worker = None
+        if hasattr(self, "validation_panel") and self.validation_panel:
+            self.validation_panel._current_findings = []
+            self.validation_panel.findings_lbl.setText("")
+            self.validation_panel.fix_btn.setEnabled(False)
+            self.validation_panel.hide()
+
         self.stacked_widget.setCurrentWidget(self.loading_widget)
+        if self.parent_window and hasattr(self.parent_window, "sidebar") and self.parent_window.sidebar:
+            self.parent_window.sidebar.set_generating(True)
 
 
     # ── Async generation (non-blocking) ───────────────────────────────────────
 
-    def generate_from_prompt(self, prompt_text, complexity_level="Neutral"):
+    def generate_from_prompt(self, prompt_text, complexity_level="Neutral", model_choice="Groq \u2014 Fast (Cloud)"):
         """Kick off diagram generation asynchronously so the UI stays responsive."""
         prompt_text = prompt_text.strip()
         if not prompt_text:
             QMessageBox.warning(self, "Empty Prompt", "Please enter a diagram description.")
+            if self.parent_window and hasattr(self.parent_window, "sidebar") and self.parent_window.sidebar:
+                self.parent_window.sidebar.set_generating(False)
             return False
 
         # Cancel any in-flight generation worker
@@ -1017,10 +1073,11 @@ class DiagramCanvas(QWidget):
 
         self._is_regex_fallback = False
         self._show_loading()
-        self._pending_prompt     = prompt_text
-        self._pending_complexity = complexity_level
+        self._pending_prompt       = prompt_text
+        self._pending_complexity   = complexity_level
+        self._pending_model_choice = model_choice
 
-        self._gen_worker = GenerationWorker(prompt_text, complexity_level, self.generator)
+        self._gen_worker = GenerationWorker(prompt_text, complexity_level, self.generator, model_choice)
         self._gen_worker.finished.connect(self._on_llm_finished)
         self._gen_worker.failed.connect(self._on_llm_failed)
         self._gen_worker.start()
@@ -1037,6 +1094,8 @@ class DiagramCanvas(QWidget):
         except Exception as e:
             import traceback; traceback.print_exc()
             QMessageBox.critical(self, "Generation Error", f"Failed to generate diagram:\n\n{str(e)}")
+            if self.parent_window and hasattr(self.parent_window, "sidebar") and self.parent_window.sidebar:
+                self.parent_window.sidebar.set_generating(False)
 
     def _on_llm_finished(self, parsed_data: dict):
         """Called on the main thread once the background LLM call succeeds."""
@@ -1044,33 +1103,82 @@ class DiagramCanvas(QWidget):
         prompt_text      = self._pending_prompt
         complexity_level = self._pending_complexity
         try:
+            from ECD.pin_model import get_base_type
+        except ImportError:
+            from pin_model import get_base_type
+
+        try:
+            def _to_tuple(c):
+                if isinstance(c, dict):
+                    return (c.get("id", ""), c.get("label", ""))
+                if isinstance(c, (list, tuple)) and len(c) >= 2:
+                    return (c[0], c[1])
+                return (str(c), str(c))
+
+            parsed_data["components"] = [_to_tuple(c) for c in parsed_data.get("components", [])]
             comp_ids = [c for c, _ in parsed_data["components"]]
             lang     = parsed_data.get("language", self.generator.detect_language(prompt_text))
             voltage  = parsed_data.get("voltage", "230V / 415V")
 
-            # Safety minimum
-            if "supply" not in comp_ids:
+            prompt_lower = prompt_text.lower()
+            def is_explicitly_excluded(cid: str) -> bool:
+                cid_base = get_base_type(cid)
+                if cid_base == "supply":
+                    if any(kw in prompt_lower for kw in ["no supply", "without supply", "exclude supply", "omit supply", "no incoming"]):
+                        return True
+                    return bool(re.search(r'\b(?:no|without|exclude|omit|(?:do|does|did)\s+not\s+include|don\'?t\s+include)\b.{0,60}?\b(?:supply|mains|incoming)\b', prompt_lower))
+                if cid_base == "maincb":
+                    if any(kw in prompt_lower for kw in ["direct connection", "connected directly", "no maincb", "no main breaker", "without main breaker", "without a main breaker", "no breaker", "without breaker", "do not include a main breaker", "do not include main breaker", "ブレーカーなし", "主遮断器なし", "主遮断器は含めない", "主遮断器不要", "ブレーカー不要", "直接接続"]):
+                        return True
+                    return bool(re.search(r'\b(?:no|without|exclude|omit|(?:do|does|did)\s+not\s+include|don\'?t\s+include)\b.{0,60}?\b(?:main\s+)?(?:cb|breaker|mcb|mccb)\b', prompt_lower))
+                if cid_base in ("rcd", "rcbo"):
+                    if any(kw in prompt_lower for kw in ["direct connection", "connected directly", "no rcd", "no rcbo", "no residual", "no earth fault", "without rcd", "漏電遮断器なし", "漏電遮断器は含めない", "rcdなし"]):
+                        return True
+                    return bool(re.search(r'\b(?:no|without|exclude|omit|(?:do|does|did)\s+not\s+include|don\'?t\s+include)\b.{0,60}?\b(?:rcd|rcbo|residual|earth\s+fault)\b', prompt_lower))
+                if cid_base == "nbar":
+                    if any(kw in prompt_lower for kw in ["no neutral", "without neutral", "中性線なし", "中性バーなし"]):
+                        return True
+                    return bool(re.search(r'\b(?:no|without|exclude|omit|(?:do|does|did)\s+not\s+include|don\'?t\s+include)\b.{0,60}?\b(?:neutral|nbar|n-bar|n\s+bar)\b', prompt_lower))
+                if cid_base == "ebar":
+                    if any(kw in prompt_lower for kw in ["no earth", "no ground", "without earth", "without ground", "接地バーなし", "アースなし", "接地なし"]):
+                        return True
+                    return bool(re.search(r'\b(?:no|without|exclude|omit|(?:do|does|did)\s+not\s+include|don\'?t\s+include)\b.{0,60}?\b(?:earth|ground|ebar|e-bar|e\s+bar)\b', prompt_lower))
+                if cid_base == "bus":
+                    if any(kw in prompt_lower for kw in ["no busbar", "no bus"]):
+                        return True
+                    return bool(re.search(r'\b(?:no|without|exclude|omit|(?:do|does|did)\s+not\s+include|don\'?t\s+include)\b.{0,60}?\b(?:busbar|bus\s+bar|bus)\b', prompt_lower))
+                return False
+
+            # Safety minimum (only insert supply if not explicitly omitted)
+            if "supply" not in comp_ids and not is_explicitly_excluded("supply"):
                 parsed_data["components"].insert(0, (
                     "supply",
                     self.generator.components_map["main incoming supply"][lang].replace("230V / 415V", voltage)
                 ))
-            explicit_no_breaker = any(
-                p in prompt_text.lower()
-                for p in ["no breaker", "direct connection", "no maincb"])
+
+            if re.search(r'\b(?:supply\s*(?:1\s*and\s*(?:supply\s*)?2|[a-b]\s*and\s*supply\s*[a-b])|mains\s*1\s*and\s*(?:mains\s*)?2|(?:two|2)\s+(?:main\s+)?supplies|dual\s+supplies?|(?:main\s+)?(?:grid|mains|utility)\s+(?:supply\s+)?and\s+(?:backup\s+)?(?:generator|secondary|auxiliary)\s+supply)\b|(?:主電源|電源).*?(?:副電源|発電機|2系統)', prompt_lower):
+                if not any(c == "supply_2" for c, _ in parsed_data["components"]):
+                    parsed_data["components"].insert(1, ("supply_2", f"Secondary Supply ({voltage})"))
+
+            explicit_no_breaker = is_explicitly_excluded("maincb")
             if "maincb" not in comp_ids and not explicit_no_breaker:
                 parsed_data["components"].insert(1, (
                     "maincb", self.generator.components_map["main breaker"][lang]))
 
             # Complexity filtering
-            prompt_lower = prompt_text.lower()
             COMPONENT_KEYWORDS = {
-                "rcd":  ["rcd", "residual current", "rcbo", "earth fault"],
-                "nbar": ["neutral bar", "neutral link"],
-                "ebar": ["earth bar", "earth terminal"],
-                "bus":  ["busbar", "bus bar", "copper bar"],
+                "supply":["supply", "mains", "grid", "source", "incoming"],
+                "rcd":   ["rcd", "residual current", "rcbo", "earth fault"],
+                "nbar":  ["neutral bar", "neutral link"],
+                "ebar":  ["earth bar", "earth terminal"],
+                "bus":   ["busbar", "bus bar", "copper bar"],
+                "outcb": ["breaker", "mcb", "circuit", "load", "motor", "socket", "light", "outlet", "branch", "lamp"],
+                "motor_3ph": ["motor_3ph", "3ph_motor", "3-phase motor", "three-phase motor", "3ph motor"],
             }
+
             def prompt_mentions(cid):
-                return any(kw in prompt_lower for kw in COMPONENT_KEYWORDS.get(cid, []))
+                base_id = get_base_type(cid)
+                return any(kw in prompt_lower for kw in COMPONENT_KEYWORDS.get(base_id, []))
 
             if complexity_level != "Neutral":
                 allowed_ids = set(COMPLEXITY_LEVELS[complexity_level]["components"])
@@ -1079,32 +1187,19 @@ class DiagramCanvas(QWidget):
                 allowed_ids = set(c for c, _ in parsed_data["components"])
                 allow_outcb = True
 
-            try:
-                from ECD.pin_model import get_base_type
-            except ImportError:
-                from pin_model import get_base_type
-
             parsed_data["components"] = [
                 (c, l) for c, l in parsed_data["components"]
-                if c in allowed_ids
-                or (allow_outcb and get_base_type(c) == "outcb")
-                or prompt_mentions(c)
+                if (c in allowed_ids or get_base_type(c) == "supply" or (allow_outcb and get_base_type(c) == "outcb") or prompt_mentions(c))
+                and not is_explicitly_excluded(c)
             ]
 
             # Backfill defaults for non-Neutral modes
             if complexity_level != "Neutral":
-                explicit_exclusions = {
-                    "rcd":    ["no rcd", "no residual", "no earth fault"],
-                    "nbar":   ["no neutral"],
-                    "ebar":   ["no earth", "no ground"],
-                    "bus":    ["no busbar", "no bus"],
-                    "maincb": ["no breaker", "direct connection", "no maincb"],
-                }
                 current_ids = {c for c, _ in parsed_data["components"]}
                 defaults    = self.generator.get_default_components(lang, voltage, complexity_level)
                 for cid, lbl in defaults:
                     if cid not in current_ids and get_base_type(cid) != "outcb":
-                        if not any(ex in prompt_lower for ex in explicit_exclusions.get(cid, [])):
+                        if not is_explicitly_excluded(cid):
                             parsed_data["components"].append((cid, lbl))
 
             if complexity_level == "Detailed":
@@ -1128,6 +1223,18 @@ class DiagramCanvas(QWidget):
             parsed_data["complexity"] = complexity_level
             parsed_data["prompt"]     = prompt_text
             parsed_data["language"]   = self.generator.detect_language(prompt_text)
+
+            phase_hint = parsed_data.get("phase_hint")
+            if not phase_hint:
+                if re.search(r'\b(?:three[-\s]*phase|3[-\s]*phase|三相)\b', prompt_lower):
+                    phase_hint = "three-phase"
+                elif re.search(r'\b(?:single[-\s]*phase|1[-\s]*phase|単相)\b', prompt_lower):
+                    phase_hint = "single-phase"
+            parsed_data["phase_hint"] = phase_hint
+
+            if re.search(r'\b(?:spare_block|spare_terminal|spare_cb|unwired|spare)\b', prompt_lower):
+                if not any(c == "spare_block" for c, _ in parsed_data["components"]):
+                    parsed_data["components"].append(("spare_block", "Spare Component"))
             print("Parsed via LLM")
             self._finalise_generation(parsed_data, prompt_text, complexity_level)
 
@@ -1174,9 +1281,10 @@ class DiagramCanvas(QWidget):
                 f"{len(parsed_data.get('components', []))} components. "
                 "Drag boxes · Double-click text · Edit code below.", 6000)
 
-        # Disable the sidebar Reset button on fresh generation baseline
-        if self.parent_window and hasattr(self.parent_window, "sidebar"):
+        # Disable the sidebar Reset button on fresh generation baseline and re-enable Generate button
+        if self.parent_window and hasattr(self.parent_window, "sidebar") and self.parent_window.sidebar:
             self.parent_window.sidebar.reset_btn.setEnabled(False)
+            self.parent_window.sidebar.set_generating(False)
 
         self._last_prompt = prompt_text
         self._run_validation(prompt_text, parsed_data)

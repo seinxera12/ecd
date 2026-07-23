@@ -107,7 +107,7 @@ If the user says "no RCD", "no fault path", "no neutral", "no earth", "simple br
 2. Language: Japanese text (hiragana/katakana/kanji) -> "ja". Otherwise -> "en".
 3. supply label must include voltage. Example: "Main Supply (230V AC)".
 4. rcd / rcbo label: use whatever the user names it. If user doesn't name it, use "RCD (Earth Fault Protection)".
-5. outcb_N: only multiple entries if user names distinct/multiple circuits. Max 15.
+5. outcb_N: If the user names distinct circuits OR specifies a quantity of loads, circuits, or breakers (e.g. "three loads", "3 circuits", "4 motors"), generate N outgoing branch breakers (outcb_1..outcb_N) with corresponding labels (e.g. "Load 1", "Load 2", "Load 3" or "Motor 1", "Motor 2", "Motor 3"). Max 15.
 6. "standard distribution panel" with no detail at Standard/Detailed complexity -> include full default set.
 7. The supply and load should always be present unless user explicitly says "no loads", "direct connection", or "no supply".
 """
@@ -130,6 +130,26 @@ If the user says "no RCD", "no fault path", "no neutral", "no earth", "simple br
         response = requests.post(self.url, json=payload, timeout=90)
         response.raise_for_status()
         return response.json().get("response", "").strip()
+
+    def chat(self, system_prompt: str, user_prompt: str, max_tokens: int = 1024) -> str:
+        """Plain text chat via Ollama /api/chat endpoint."""
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user",   "content": user_prompt},
+            ],
+            "stream": False,
+            "options": {
+                "temperature": 0.1,
+                "num_predict": max_tokens,
+                "num_ctx": 8192,
+            },
+        }
+        chat_url = self.url.replace("/api/generate", "/api/chat")
+        response = requests.post(chat_url, json=payload, timeout=90)
+        response.raise_for_status()
+        return response.json().get("message", {}).get("content", "").strip()
 
     # ── Stage 1: Identification ──────────────────────────────────────────────
     def _stage1_identify(self, prompt: str, complexity: str) -> dict:
@@ -251,16 +271,17 @@ Return ONLY valid JSON matching the schema. No explanation, no markdown.
         
 
 class GenerationWorker(QThread):
-    """Runs the blocking LLM call (whichever backend is configured) on a
+    """Runs the blocking LLM call (whichever backend and model is configured) on a
     background thread."""
     finished = Signal(dict)       # emits parsed_data on success
     failed   = Signal(str)        # emits error message on failure
 
-    def __init__(self, prompt: str, complexity: str, generator):
+    def __init__(self, prompt: str, complexity: str, generator, model_choice: str = "Groq \u2014 Fast (Cloud)"):
         super().__init__()
-        self.prompt     = prompt
-        self.complexity = complexity
-        self.generator  = generator   # MermaidGenerator instance (thread-safe reads only)
+        self.prompt       = prompt
+        self.complexity   = complexity
+        self.generator    = generator   # MermaidGenerator instance (thread-safe reads only)
+        self.model_choice = model_choice
 
     def run(self):
         try:
@@ -269,7 +290,7 @@ class GenerationWorker(QThread):
             except ImportError:
                 from llm_factory import get_llm_client
 
-            client      = get_llm_client()
+            client      = get_llm_client(self.model_choice)
             parsed_data = client.prompt_to_structured_data(self.prompt, self.complexity)
 
             if not isinstance(parsed_data, dict) or "components" not in parsed_data:

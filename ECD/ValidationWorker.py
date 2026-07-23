@@ -1,5 +1,4 @@
 import re
-import requests
 from PySide6.QtCore import *
 from PySide6.QtWidgets import *
 from PySide6.QtGui import *
@@ -34,14 +33,24 @@ class ValidationWorker(QThread):
                 netlist_ok = False
                 physical_errors = [f"Physical layout error: {pe}"]
 
-            # Generate Mermaid code dynamically for LLM semantic validation
+            # 2. ERC (Electrical Rule Check) Tier 1 presence rules
+            erc_findings = []
+            try:
+                try:
+                    from ECD.erc import run_erc
+                except ImportError:
+                    from erc import run_erc
+                erc_findings = run_erc(netlist, self.parsed_data)
+            except Exception as ee:
+                print(f"[ValidationWorker] ERC check error: {ee}")
+
+            # 3. Semantic LLM validation (Ollama)
             try:
                 from ECD.mermaid_generator import MermaidGenerator
             except ImportError:
                 from mermaid_generator import MermaidGenerator
             self.mermaid_code = MermaidGenerator().generate_mermaid_code(self.parsed_data)
 
-            # 2. Semantic LLM validation (Ollama)
             complexity = self.complexity
             complexity_context = {
                 "Simple": """COMPLEXITY: Simple mode is intentionally minimal.
@@ -59,7 +68,7 @@ class ValidationWorker(QThread):
 
                 "Standard": """COMPLEXITY: Standard mode shows L/N/E but has intentional omissions.
 - Fault protection paths are deliberately excluded. Do NOT flag missing fault paths.
-- Outgoing MCBs (branch breakers) are excluded. Do NOT flag their absence.
+- Outgoing MCBs (branch breakers) are excluded by default, UNLESS the user explicitly requested a specific quantity or list of loads/circuits (e.g. 'three loads', '3 circuits', '4 motors'). If the user asked for N loads/circuits, flag if N outgoing breakers/loads are not present.
 - Validate: supply → breaker → busbar → neutral bar → earth bar → loads connectivity.""",
 
                  "Detailed": """COMPLEXITY: Detailed mode is the full diagram.
@@ -101,21 +110,19 @@ Be concise. Only flag real problems."""
 
             llm_findings = []
             try:
-                payload = {
-                    "model": "mistral:7b-instruct",
-                    "prompt": f"{system_prompt.strip()}\n\nUSER PROMPT:\n{self.prompt}\n\nMERMAID CODE:\n{self.mermaid_code}",
-                    "stream": False,
-                    "options": {
-                        "temperature": 0.1,
-                        "num_predict": 512,
-                        "num_ctx": 4096,
-                    }
-                }
-                response = requests.post("http://localhost:11434/api/generate", json=payload, timeout=60)
-                response.raise_for_status()
-                text = response.json().get("response", "").strip()
+                try:
+                    from ECD.llm.ollama_client import OllamaClient
+                except ImportError:
+                    from llm.ollama_client import OllamaClient
+
+                user_content = (
+                    f"USER PROMPT:\n{self.prompt}\n\n"
+                    f"MERMAID CODE:\n{self.mermaid_code}"
+                )
+                client = OllamaClient(model="mistral:7b-instruct")
+                text = client.chat(system_prompt.strip(), user_content, max_tokens=512)
                 text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
-                
+
                 is_ok = "STATUS: OK" in text or "STATUS:OK" in text
                 findings_block = text.split("FINDINGS:")[-1].strip() if "FINDINGS:" in text else ""
                 if is_ok:
@@ -127,25 +134,49 @@ Be concise. Only flag real problems."""
                         if line.strip() and line.strip() != "None"
                     ]
             except Exception as e:
-                # LLM server offline or failed, that's okay, we proceed with physical findings
-                pass
+                # LLM unavailable or failed — proceed with physical and ERC findings
+                print(f"[ValidationWorker] LLM semantic check skipped: {e}")
 
-            # 3. Merge findings
-            all_findings = []
-            if not netlist_ok:
-                all_findings.extend(physical_errors)
-            all_findings.extend(llm_findings)
+            # 4. Merge findings into 3 visually distinct sections
+            all_finding_strings = []
+            findings_sections = []
 
-            has_issues = len(all_findings) > 0
+            if physical_errors:
+                sec_lines = ["<b>⚡ Connectivity Errors (Netlist Graph):</b>"]
+                sec_lines.extend(f"• {e}" for e in physical_errors)
+                findings_sections.append("<br>".join(sec_lines))
+                all_finding_strings.extend(physical_errors)
+
+            if erc_findings:
+                sec_lines = ["<b>🛡️ Electrical Rule Checks (ERC):</b>"]
+                for f in erc_findings:
+                    comp_info = f" ({', '.join(f.components)})" if f.components else ""
+                    if f.severity == "ERROR":
+                        sev_badge = "<span style='color:#9b2c2c; font-weight:bold;'>[ERROR]</span>"
+                    elif f.severity == "WARNING":
+                        sev_badge = "<span style='color:#b7791f; font-weight:bold;'>[WARNING]</span>"
+                    else:
+                        sev_badge = f"[{f.severity}]"
+                    sec_lines.append(f"• <b>[{f.code}]</b> {sev_badge}{comp_info}: {f.message}")
+                findings_sections.append("<br>".join(sec_lines))
+                all_finding_strings.extend([f.message for f in erc_findings])
+
+            if llm_findings:
+                sec_lines = ["<b>🤖 AI Suggestions (Semantic Review):</b>"]
+                sec_lines.extend(f"• {f}" for f in llm_findings)
+                findings_sections.append("<br>".join(sec_lines))
+                all_finding_strings.extend(llm_findings)
+
+            has_issues = len(all_finding_strings) > 0
             
             # Format combined output response
             status_line = "STATUS: ISSUES_FOUND" if has_issues else "STATUS: OK"
-            findings_bullet = "\n".join(f"- {f}" for f in all_findings) if all_findings else "None"
-            response_text = f"{status_line}\nFINDINGS:\n{findings_bullet}"
+            findings_text = "<br><br>".join(findings_sections) if findings_sections else "None"
+            response_text = f"{status_line}\nFINDINGS:\n{findings_text}"
             
             self.validationComplete.emit(response_text, has_issues)
-            if has_issues and all_findings:
-                self.findingsReady.emit(all_findings)
+            if has_issues and all_finding_strings:
+                self.findingsReady.emit(all_finding_strings)
         except Exception as e:
             self.validationComplete.emit(f"Validation error: {e}", True)
 
@@ -186,6 +217,36 @@ class MermaidFixWorker(QThread):
         # Strip ```mermaid ... ``` or ``` ... ```
         text = re.sub(r'^```[a-zA-Z]*\n?', '', text)
         text = re.sub(r'\n?```$', '', text)
+        return text.strip()
+
+    @staticmethod
+    def _extract_mermaid(text: str) -> str:
+        """
+        Robustly extract a sequenceDiagram block from text that may have:
+        - A prose preamble ("Here is the fixed code:\n...")
+        - Markdown fences anywhere in the response (not just at start/end)
+        - Bare code with no fences at all
+
+        Strategy:
+        1. Try to find a fenced block containing sequenceDiagram.
+        2. If not found, extract from the first occurrence of 'sequenceDiagram' to end.
+        3. If still not found, return the text as-is (caller will reject via _is_valid_mermaid).
+        """
+        # 1. Look for a fenced code block that contains sequenceDiagram
+        fenced = re.search(
+            r'```[a-zA-Z]*\n?(sequenceDiagram.*?)```',
+            text,
+            re.DOTALL | re.IGNORECASE,
+        )
+        if fenced:
+            return fenced.group(1).strip()
+
+        # 2. Extract from the first 'sequenceDiagram' keyword onward
+        idx = text.find("sequenceDiagram")
+        if idx != -1:
+            return text[idx:].strip()
+
+        # 3. Return as-is — _is_valid_mermaid will reject it
         return text.strip()
 
     @staticmethod
@@ -302,29 +363,42 @@ No explanation. No markdown fences. No preamble. Start with: sequenceDiagram"""
             f"FIXED MERMAID CODE:"
         )
 
-        payload = {
-            "model": "mistral:7b-instruct",
-            "prompt": f"{system_prompt.strip()}\n\n{user_content}",
-            "stream": False,
-            "options": {
-                "temperature": 0.0,   # deterministic — we want exact syntax
-                "num_predict": 1536,  # generous enough for a full diagram
-                "num_ctx":     6144,
-            },
-        }
+        # ── Pre-flight: some findings can only be resolved by REMOVING components.
+        # The fix worker is add-only, so we detect those cases and bail early
+        # with a helpful message instead of sending a doomed prompt to the LLM.
+        REMOVAL_KEYWORDS = [
+            "should not", "must not", "must be removed", "should be removed",
+            "not expected", "unwanted", "absent in simple", "should be absent",
+            "fault path", "remove", "delete", "excess",
+        ]
+        add_only_impossible = all(
+            any(kw in f.lower() for kw in REMOVAL_KEYWORDS)
+            for f in self.findings
+        ) and self.findings  # only trigger if there actually are findings
+
+        if add_only_impossible:
+            self.fixFailed.emit(
+                "Fix Issues cannot resolve this automatically.\n\n"
+                "The validator found components that should be removed (e.g. a fault path "
+                "in Simple mode), but the fix engine can only add missing components — it "
+                "cannot delete existing ones.\n\n"
+                "Please regenerate the diagram using a lower complexity level, or remove "
+                "the unwanted component from your prompt."
+            )
+            return
 
         try:
-            response = requests.post(
-                "http://localhost:11434/api/generate",
-                json=payload,
-                timeout=90,
-            )
-            response.raise_for_status()
+            try:
+                from ECD.llm.ollama_client import OllamaClient
+            except ImportError:
+                from llm.ollama_client import OllamaClient
 
-            raw = response.json().get("response", "").strip()
+            client = OllamaClient(model="mistral:7b-instruct")
+            raw = client.chat(system_prompt.strip(), user_content, max_tokens=1536)
             # Strip any <think>...</think> blocks (some reasoning models emit these)
             raw = re.sub(r'<think>.*?</think>', '', raw, flags=re.DOTALL).strip()
-            fixed_code = self._strip_fences(raw)
+            # Robustly extract the sequenceDiagram block from anywhere in the response
+            fixed_code = self._extract_mermaid(raw)
             fixed_code = self._sanitize_labels(fixed_code)
 
             if not self._is_valid_mermaid(fixed_code):
@@ -337,6 +411,7 @@ No explanation. No markdown fences. No preamble. Start with: sequenceDiagram"""
 
         except Exception as e:
             self.fixFailed.emit(str(e))
+
 
 
 class ValidationPanel(QWidget):
@@ -390,9 +465,14 @@ class ValidationPanel(QWidget):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setStyleSheet("QScrollArea { background: transparent; }")
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setStyleSheet("""
+            QScrollArea { background: transparent; }
+            QScrollBar:vertical { width: 0px; height: 0px; background: transparent; }
+            QScrollBar::handle:vertical { width: 0px; height: 0px; background: transparent; }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; width: 0px; }
+        """)
 
         self.findings_lbl = QLabel("")
         self.findings_lbl.setWordWrap(True)
@@ -413,7 +493,7 @@ class ValidationPanel(QWidget):
                 background: transparent;
             }
         """)
-        self.setMaximumHeight(140)
+        self.setMinimumHeight(100)
 
     def set_findings(self, findings: list):
         """Store parsed findings so the Fix button can forward them."""

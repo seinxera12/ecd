@@ -94,6 +94,21 @@ class GeminiClient(LLMClientBase):
         data = resp.json()
         return data["candidates"][0]["content"]["parts"][0]["text"]
 
+    def _call_text(self, system_prompt: str, user_prompt: str, max_tokens: int = 1024) -> str:
+        """Plain text generation — no response_schema constraint."""
+        payload = {
+            "system_instruction": {"parts": [{"text": system_prompt}]},
+            "contents": [{"parts": [{"text": user_prompt}]}],
+            "generationConfig": {
+                "temperature": 0.1,
+                "maxOutputTokens": max_tokens,
+            },
+        }
+        resp = requests.post(self.url, json=payload, timeout=90)
+        resp.raise_for_status()
+        data = resp.json()
+        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+
     def prompt_to_structured_data(self, prompt: str, complexity: str = "Neutral") -> dict:
         rules = OllamaClient.COMPONENT_MEANINGS + OllamaClient.COMPLEXITY_RULES
 
@@ -117,3 +132,8 @@ Complexity level in effect: {complexity}
             result["phase_hint"] = None
 
         return result
+
+    def chat(self, system_prompt: str, user_prompt: str, max_tokens: int = 1024) -> str:
+        """Plain text chat via Gemini — no JSON schema, returns raw text."""
+        print(f"[gemini] chat | model={self.model}")
+        return self._call_text(system_prompt, user_prompt, max_tokens=max_tokens)

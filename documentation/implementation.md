@@ -72,10 +72,12 @@ ECD follows a **Layered Desktop Application Architecture**:
 | GUI Framework | PySide6 (Qt 6.x Python bindings) |
 | Web Rendering | QWebEngineView (Chromium) |
 | Diagram Rendering | Mermaid.js 10.x |
-| LLM Integration | Ollama API (Mistral 7B) |
-| CAD Export | ezdxf 1.4.3, custom KiCad S-expression generator |
-| Language | Python 3.x |
-| Threading | QThread for async operations |
+| LLM Integration | Multi-backend: Groq Cloud API (OpenAI OSS 20B/120B), Google Gemini 3.5 Flash API, Local Ollama (Mistral 7B / Qwen 2.5 7B) + Local Regex Fallback Engine |
+| Rule Verification Engine | 3-tier deterministic Python Electrical Rule Check (ERC) engine (`ERC-001` to `ERC-010`) |
+| CAD & Vector Export | `ezdxf 1.4.3` (DXF with CJK font support), Matplotlib backend (PNG/PDF), SVG rendering, custom KiCad 6+ S-expression generator |
+| Standalone Packaging | PyInstaller 6.x (`ECD.spec`) |
+| Language | Python 3.9+ |
+| Threading | QThread for async LLM generation, background validation, and auto-fix workers |
 
 ---
 
@@ -221,37 +223,45 @@ graph LR
 ecd/
 ├── ECD/                          # Main application package
 │   ├── main_app.py               # Application entry point, main window
-│   ├── diagram_canvas.py         # Diagram rendering and interaction
-│   ├── sidebar.py                # Input panel, templates, controls
-│   ├── mermaid_generator.py      # Mermaid code generation engine
-│   ├── ollama_client.py          # LLM API integration
-│   ├── web_bridge.py             # Qt ↔ JavaScript bridge
-│   ├── element_editor.py         # Dialog for editing elements
-│   ├── ValidationWorker.py       # Async validation + auto-fix
+│   ├── diagram_canvas.py         # Diagram rendering, interaction, fallback handling
+│   ├── sidebar.py                # Input panel, model selector, templates, controls
+│   ├── mermaid_generator.py      # Mermaid code generation engine & regex fallback
+│   ├── erc.py                    # 3-tier deterministic Electrical Rule Check (ERC) engine
+│   ├── pin_model.py              # Pin terminal layout, netlist builder & DFS wire trace
+│   ├── symbols.py                # ezdxf IEC electrical symbol block library
+│   ├── element_editor.py         # Dialog for editing diagram elements
+│   ├── ValidationWorker.py       # Async validation + auto-fix worker
 │   ├── Kicad_exporter.py         # KiCad schematic export
-│   └── constants.py              # Configuration constants
+│   ├── dxf_generator.py          # DXF CAD export with CJK font support & SVG/PNG backends
+│   ├── constants.py              # Configuration constants
+│   ├── assets/
+│   │   └── symbols/              # IEC SVG symbol assets (ebar, loads, maincb)
+│   └── llm/                      # Multi-backend LLM Client package
+│       ├── llm_factory.py        # Dynamic LLM backend factory
+│       ├── groq_client.py        # Groq Cloud LLM client
+│       ├── gemini_client.py      # Google Gemini 3.5 Flash LLM client
+│       └── ollama_client.py      # Local Ollama client & GenerationWorker
 │
-├── dxf_generator.py              # DXF export module
-├── diagram.py                    # Alternative graphics-based editor (legacy)
-├── Sequence.py                   # Standalone sequence diagram generator
-├── Test.py / Test2.py            # Development test files
+├── documentation/                # Project documentation
+│   ├── implementation.md         # Architecture & implementation details
+│   ├── instructions.md           # Documentation standards
+│   └── setup.md                  # Developer setup & build guide
 │
-├── *.kicad_sch                   # KiCad schematic examples
-├── requirements.txt              # Python dependencies
-├── requirement.txt               # Minimal dependencies
-├── DiagramGeneration.spec        # PyInstaller build spec
-│
-└── documentation/
-    └── instructions.md           # Documentation requirements
+├── tests/                        # Automated unit test suite
+├── test_erc_rules.py             # Full 3-tier ERC rule test suite
+├── ECD.spec                      # PyInstaller standalone build specification
+└── requirements.txt              # Python package dependencies
 ```
 
 ### Folder Relationships
 
 | Directory | Purpose | Interactions |
 |-----------|---------|-------------|
-| `ECD/` | Main application package | All modules interact through imports; main_app is the entry point |
-| `documentation/` | Project documentation | Static files, no code dependencies |
-| Root | Build artifacts, test files | Test files import from ECD/ |
+| `ECD/` | Main application package | All modules interact through imports; `main_app` is the entry point |
+| `ECD/llm/` | LLM client abstraction layer | Factory returns clients to `GenerationWorker` and `ValidationWorker` |
+| `ECD/assets/` | Static runtime data files | SVG assets loaded by `mermaid_generator` |
+| `documentation/` | Project documentation | Static markdown reference files |
+| `tests/` | Automated test suite | Tests import core components (`erc`, `pin_model`, `mermaid_generator`) |
 
 ---
 
@@ -420,6 +430,62 @@ self.components_map = {
 - **Neutral**: Prompt-driven only, no defaults
 - **Standard**: Full L/N/E with RCD, no fault paths
 - **Detailed**: Complete diagram with fault paths and protection notes
+
+---
+
+### erc.py (Electrical Rule Check Engine)
+
+**Purpose:** Three-tier deterministic Python validation engine to verify electrical design rules independently of wire graph continuity (`validate_netlist()`) and LLM semantic review.
+
+**Responsibilities:**
+- Run 10 deterministic rules (`ERC-001` through `ERC-010`, including `ERC-003b`) against `netlist` and `parsed_data`.
+- Evaluate rules in parallel without short-circuiting so all findings surface in a single pass.
+- Return structured `ERCFinding` instances with code, severity (`ERROR` or `WARNING`), message, and affected component IDs.
+
+**Rule Tiers:**
+- **Tier 1 — Presence Rules**:
+  - `ERC-001`: Single supply constraint (exactly 1 supply per diagram).
+  - `ERC-002`: Main breaker presence (`maincb` or top-of-column `rcbo`).
+  - `ERC-003`: Earth bar presence (`ebar` required in Standard/Detailed).
+  - `ERC-003b`: Neutral bar presence (`nbar` required in Standard/Detailed).
+  - `ERC-004`: Earth fault protection (`rcd`/`rcbo` required in Standard/Detailed).
+- **Tier 2 — Consistency Rules**:
+  - `ERC-005`: Surfaces voltage/phase mode overrides and inferences transparently.
+  - `ERC-006`: Phase mode component compatibility (flags 3-phase components in single-phase mode).
+  - `ERC-007`: Unprotected load direct connection (L-net walk verifying all loads pass through protective devices).
+- **Tier 3 — Topology Sanity Rules**:
+  - `ERC-008`: Wiring graph cycle detection (iterative DFS path-stack checking for feedback loops).
+  - `ERC-009`: Orphaned component detection (declared components with zero netlist connections, mapping `"loads"` placeholder to expanded `load_N` children).
+  - `ERC-010`: Duplicate / colliding component IDs (exact string duplicates + singleton base type normalization).
+
+**Used by:** `DiagramCanvas` (via `ValidationWorker`), `test_erc_rules.py` test suite.
+
+---
+
+### pin_model.py
+
+**Purpose:** Pin-level terminal geometry, netlist generation, and graph wire-continuity tracing.
+
+**Responsibilities:**
+- Define terminal pin maps for all component types (`supply`, `maincb`, `rcd`, `bus`, `nbar`, `ebar`, `loads`, `motor_3ph`, etc.).
+- Compute physical 2D coordinates (`compute_component_positions()`) for CAD layouts.
+- Generate graph netlist (`generate_netlist()`) with L, N, E wire connections.
+- Perform DFS wire continuity tracing (`validate_netlist()`) verifying continuous L/N/E paths from supply to load input terminals.
+- Resolve phase mode (`determine_phase_mode_detailed()`) returning mode, reason code, and description.
+
+**Used by:** `dxf_generator.py`, `erc.py`, `DiagramCanvas`, `verify_pin_model.py`.
+
+---
+
+### symbols.py
+
+**Purpose:** ezdxf block library for standard IEC electrical symbols.
+
+**Responsibilities:**
+- Register reusable DXF block symbols (`SYM_BREAKER`, `SYM_MCB`, `SYM_RCD`, `SYM_LAMP`, `SYM_GROUND`, `SYM_JUNCTION`, `SYM_GENERIC`, `SYM_SUPPLY_3PH`, `SYM_BREAKER_3PH`, `SYM_RCD_3PH`, `SYM_BUSBAR_3PH`, `SYM_MOTOR_3PH`).
+- Define exact terminal pin attachment offsets for DXF wiring alignment.
+
+**Used by:** `dxf_generator.py`.
 
 ---
 

@@ -390,7 +390,11 @@ def build_motor_3ph_block(doc):
     
     # Three top lead stubs (L1, L2, L3 connection points at y = 7.0)
     for x in (-5.0, 0.0, 5.0):
-        blk.add_line((x, radius), (x, 7.0), dxfattribs={"layer": "SYMBOLS"})
+        start_y = 0.0 if abs(x) == 5.0 else radius
+        blk.add_line((x, start_y), (x, 7.0), dxfattribs={"layer": "SYMBOLS"})
+    
+    # Horizontal bar connecting the 3 top leads at y = 7.0
+    blk.add_line((-5.0, 7.0), (5.0, 7.0), dxfattribs={"layer": "SYMBOLS"})
     
     # Earth stub at bottom (E_in at y = -7.0)
     blk.add_line((0.0, -radius), (0.0, -7.0), dxfattribs={"layer": "SYMBOLS"})

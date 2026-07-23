@@ -1,5 +1,16 @@
+import sys
+import os
 from dotenv import load_dotenv
-load_dotenv()  # reads .env from the current working directory by default
+
+if getattr(sys, 'frozen', False):
+    # Running as a PyInstaller-built exe
+    app_dir = os.path.dirname(sys.executable)
+    load_dotenv(os.path.join(app_dir, ".env"))
+else:
+    # Running from source
+    app_dir = os.path.dirname(os.path.abspath(__file__))
+    load_dotenv(os.path.join(app_dir, ".env"))
+    load_dotenv(os.path.join(os.path.dirname(app_dir), ".env"))
 
 
 import sys
@@ -85,7 +96,7 @@ class MainWindow(QMainWindow):
     def _build_ui(self):
         central = QWidget()
         root_lay = QHBoxLayout(central)
-        root_lay.setContentsMargins(8, 8, 8, 8)
+        root_lay.setContentsMargins(12, 12, 12, 12)
         root_lay.setSpacing(16)
 
         self.sidebar = Sidebar(self)
@@ -98,7 +109,7 @@ class MainWindow(QMainWindow):
             "#CanvasRoot{background:#f7fafc;border:1px solid #e2e8f0;border-radius:14px;}"
         )
         canvas_lay = QVBoxLayout(canvas_wrap)
-        canvas_lay.setContentsMargins(6, 6, 6, 6)
+        canvas_lay.setContentsMargins(14, 14, 14, 14)
         canvas_lay.setSpacing(0)
 
         self.canvas = DiagramCanvas(self)

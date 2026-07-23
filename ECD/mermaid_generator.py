@@ -254,14 +254,48 @@ class MermaidGenerator:
                         idx = int(match.group(1)) if match else (len(outcb_list) + 1)
                         outcb_list.append((f"outcb_{idx}", lbl))
                         
+        NUMBER_WORDS = {
+            "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+            "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+            "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15
+        }
         if not outcb_list:
-            match = re.search(r'(\d+)\s*(?:outgoing|branch)?\s*(?:loads|breakers|circuits|mcbs)', prompt_lower)
+            match = re.search(r'\b(\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen)\s*(?:outgoing|branch)?\s*(?:lamp|light|motor|socket|outlet|appliance|device|load|breaker|circuit|mcb|outcb|outcr|\s)*\s*(?:loads|breakers|circuits|mcbs|motors|outlets|lamps|lights)\b', prompt_lower)
             if match:
-                n_cb = int(match.group(1))
+                num_str = match.group(1)
+                n_cb = int(num_str) if num_str.isdigit() else NUMBER_WORDS.get(num_str, 1)
                 n_cb = min(n_cb, 15)
                 generic_label = self.components_map["outgoing mcbs"][language]
                 for i in range(1, n_cb + 1):
                     outcb_list.append((f"outcb_{i}", f"{generic_label} {i}"))
+
+        def is_explicitly_excluded(cid: str) -> bool:
+            cid_lower = cid.lower()
+            if "supply" in cid_lower:
+                if any(kw in prompt_lower for kw in ["no supply", "without supply", "exclude supply", "omit supply", "no incoming"]):
+                    return True
+                return bool(re.search(r'\b(?:no|without|exclude|omit|(?:do|does|did)\s+not\s+include|don\'?t\s+include)\b.{0,60}?\b(?:supply|mains|incoming)\b', prompt_lower))
+            if "maincb" in cid_lower or "breaker" in cid_lower:
+                if any(kw in prompt_lower for kw in ["direct connection", "connected directly", "no maincb", "no main breaker", "without main breaker", "without a main breaker", "no breaker", "without breaker", "do not include a main breaker", "do not include main breaker", "ブレーカーなし", "主遮断器なし", "主遮断器は含めない", "主遮断器不要", "ブレーカー不要", "直接接続"]):
+                    return True
+                return bool(re.search(r'\b(?:no|without|exclude|omit|(?:do|does|did)\s+not\s+include|don\'?t\s+include)\b.{0,60}?\b(?:main\s+)?(?:cb|breaker|mcb|mccb)\b', prompt_lower))
+            if "rcd" in cid_lower or "rcbo" in cid_lower:
+                if any(kw in prompt_lower for kw in ["direct connection", "connected directly", "no rcd", "no rcbo", "no residual", "no earth fault", "without rcd", "漏電遮断器なし", "漏電遮断器は含めない", "rcdなし"]):
+                    return True
+                return bool(re.search(r'\b(?:no|without|exclude|omit|(?:do|does|did)\s+not\s+include|don\'?t\s+include)\b.{0,60}?\b(?:rcd|rcbo|residual|earth\s+fault)\b', prompt_lower))
+            if "nbar" in cid_lower:
+                if any(kw in prompt_lower for kw in ["no neutral", "without neutral", "中性線なし", "中性バーなし"]):
+                    return True
+                return bool(re.search(r'\b(?:no|without|exclude|omit|(?:do|does|did)\s+not\s+include|don\'?t\s+include)\b.{0,60}?\b(?:neutral|nbar|n-bar|n\s+bar)\b', prompt_lower))
+            if "ebar" in cid_lower:
+                if any(kw in prompt_lower for kw in ["no earth", "no ground", "without earth", "without ground", "接地バーなし", "アースなし", "接地なし"]):
+                    return True
+                return bool(re.search(r'\b(?:no|without|exclude|omit|(?:do|does|did)\s+not\s+include|don\'?t\s+include)\b.{0,60}?\b(?:earth|ground|ebar|e-bar|e\s+bar)\b', prompt_lower))
+            if "bus" in cid_lower:
+                if any(kw in prompt_lower for kw in ["no busbar", "no bus"]):
+                    return True
+                return bool(re.search(r'\b(?:no|without|exclude|omit|(?:do|does|did)\s+not\s+include|don\'?t\s+include)\b.{0,60}?\b(?:busbar|bus\s+bar|bus)\b', prompt_lower))
+            return False
 
         # For Neutral mode, keyword-detect from prompt instead of using empty allowed list
         if complexity_level == "Neutral":
@@ -272,7 +306,7 @@ class MermaidGenerator:
                 "bus":     ["busbar", "bus bar", "bus-bar", "distribution"],
                 "nbar":    ["neutral bar", "neutral link", "n bar"],
                 "ebar":    ["earth bar", "earth terminal", "e bar"],
-                "loads":   ["load", "loads", "lighting", "socket", "appliance", "circuit"],
+                "loads":   ["load", "loads", "lighting", "socket", "appliance", "circuit", "lamp"],
             }
             all_possible = self.get_default_components(language, voltage_text, "Standard")
             all_possible_dict = dict(all_possible)
@@ -280,7 +314,7 @@ class MermaidGenerator:
             found_ids = []
             for cid, keywords in KEYWORD_TO_COMPONENT.items():
                 if any(kw in prompt_lower for kw in keywords):
-                    if cid not in [ex for ex in exclusions if any(ex_kw in prompt_lower for ex_kw in exclusions.get(cid, []))]:
+                    if not is_explicitly_excluded(cid):
                         found_ids.append(cid)
 
             # Always ensure supply and loads if detected; fallback to supply+maincb+loads minimum
@@ -290,7 +324,7 @@ class MermaidGenerator:
             found_components = [
                 (cid, all_possible_dict[cid]) for cid in found_ids
                 if cid in all_possible_dict
-                and not any(ex in prompt_lower for ex in exclusions.get(cid, []))
+                and not is_explicitly_excluded(cid)
             ]
         else:
             # Non-Neutral: use the complexity level's allowed list
@@ -302,8 +336,13 @@ class MermaidGenerator:
                 )
             found_components = [
                 (cid, lbl) for cid, lbl in comp_dict.items()
-                if not any(ex in prompt_lower for ex in exclusions.get(cid, []))
+                if not is_explicitly_excluded(cid)
             ]
+
+        # Detect multiple supplies (e.g. supply 1 and supply 2, grid and generator, 2系統の電源)
+        if re.search(r'\b(?:supply\s*(?:1\s*and\s*(?:supply\s*)?2|[a-b]\s*and\s*supply\s*[a-b])|mains\s*1\s*and\s*(?:mains\s*)?2|(?:two|2)\s+(?:main\s+)?supplies|dual\s+supplies?|(?:main\s+)?(?:grid|mains|utility)\s+(?:supply\s+)?and\s+(?:backup\s+)?(?:generator|secondary|auxiliary)\s+supply)\b|(?:主電源|電源).*?(?:副電源|発電機|2系統)', prompt_lower):
+            if not any(c == "supply_2" for c, _ in found_components):
+                found_components.insert(1, ("supply_2", f"Secondary Supply ({voltage_text})"))
 
         if complexity_level != "Simple" and outcb_list:
             try:
@@ -314,8 +353,37 @@ class MermaidGenerator:
             loads_idx = next((i for i, (cid, _) in enumerate(found_components) if cid == "loads"), len(found_components))
             found_components[loads_idx:loads_idx] = outcb_list
 
-        return {"components": found_components, "voltage": voltage_text,
-                "language": language, "complexity": complexity_level}
+        phase_hint = None
+        if re.search(r'\b(?:three[-\s]*phase|3[-\s]*phase|三相)\b', prompt_lower):
+            phase_hint = "three-phase"
+        elif re.search(r'\b(?:single[-\s]*phase|1[-\s]*phase|単相)\b', prompt_lower):
+            phase_hint = "single-phase"
+
+        if re.search(r'\b(?:spare_block|spare_terminal|spare_cb|unwired|spare)\b', prompt_lower):
+            if not any(c == "spare_block" for c, _ in found_components):
+                found_components.append(("spare_block", "Spare Component"))
+
+        if re.search(r'\b(?:loads_1|loads\s*1)\b', prompt_lower):
+            if not any(c == "loads_1" for c, _ in found_components):
+                found_components.append(("loads_1", "Load 1"))
+
+        if re.search(r'\b(?:motor_3ph|3ph_motor|3[-\s]*phase\s*motor|three[-\s]*phase\s*motor)\b', prompt_lower):
+            if not any(c == "motor_3ph" for c, _ in found_components):
+                found_components.append(("motor_3ph", "3-Phase Motor"))
+
+        custom_conns = None
+        if re.search(r'\b(?:feeds?\s*back|loop|cyclic|cycle)\b', prompt_lower):
+            custom_conns = [("supply", "maincb"), ("maincb", "bus"), ("bus", "outcb_1"), ("outcb_1", "loads"), ("outcb_1", "maincb")]
+            if not any(c == "outcb_1" for c, _ in found_components):
+                found_components.append(("outcb_1", "Branch Breaker 1"))
+
+        ret_dict = {"components": found_components, "voltage": voltage_text,
+                    "phase_hint": phase_hint,
+                    "language": language, "complexity": complexity_level,
+                    "prompt": prompt_text}
+        if custom_conns:
+            ret_dict["connections"] = custom_conns
+        return ret_dict
 
     def get_default_components(self, language, voltage_text="230V / 415V", complexity_level="Standard"):
         level_cfg = COMPLEXITY_LEVELS[complexity_level]

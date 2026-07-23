@@ -65,6 +65,8 @@ class Sidebar(QWidget):
 
         content_lay.addWidget(QLabel("Diagram description:"))
         self.prompt_text = QTextEdit()
+        self.prompt_text.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.prompt_text.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.prompt_text.setPlaceholderText(
             "Describe your electrical system…\n"
             "e.g. 'Main supply, breaker, busbar, neutral bar, earth bar, load circuits at 415V'"
@@ -109,23 +111,24 @@ class Sidebar(QWidget):
         detail_row.addWidget(self.complexity_combo, 1)
         content_lay.addLayout(detail_row)
 
-        self.complexity_hint = QLabel(COMPLEXITY_LEVELS["Standard"]["description"])
+        initial_level = self.complexity_combo.currentText()
+        self.complexity_hint = QLabel(COMPLEXITY_LEVELS.get(initial_level, {}).get("description", ""))
         self.complexity_hint.setFont(QFont("Arial", 9))
         self.complexity_hint.setStyleSheet("color:#718096; font-style:italic; margin-bottom:4px;")
         self.complexity_hint.setWordWrap(True)
         content_lay.addWidget(self.complexity_hint)
 
-        content_lay.addWidget(QLabel("Quick templates:"))
-        self.tmpl_combo = NoScrollComboBox()
-        self.tmpl_combo.addItems([
-            "Basic Distribution",
-            "Industrial Panel",
-            "Residential Board",
-            "Three-Phase System",
-            "Safety Earth System",
-            "日本語: 基本的な配電",
+        content_lay.addWidget(QLabel("Model selection:"))
+        self.model_combo = NoScrollComboBox()
+        self.model_combo.addItems([
+            "Groq - Fast (Limited Daily Use)",
+            "Groq - Large (Higher Quality, Limited Daily Use)",
+            "Gemini (Limited)",
+            "Mistral (Unlimited, Offline)",
+            "Qwen (Unlimited, Offline)",
         ])
-        self.tmpl_combo.setStyleSheet("""
+        self.model_combo.setCurrentText("Groq - Fast (Limited Daily Use)")
+        self.model_combo.setStyleSheet("""
             QComboBox {
                 color: #000000;
                 background: #ffffff;
@@ -138,18 +141,18 @@ class Sidebar(QWidget):
                 color: #000000;
             }
         """)
-        self.tmpl_combo.currentTextChanged.connect(self._load_template)
-        content_lay.addWidget(self.tmpl_combo)
+        content_lay.addWidget(self.model_combo)
 
-        gen_btn = QPushButton("⚡  Generate Diagram")
-        gen_btn.setStyleSheet("""
+        self.gen_btn = QPushButton("⚡  Generate Diagram")
+        self.gen_btn.setStyleSheet("""
             QPushButton {background:#2c5282;color:#fff;border:none;border-radius:6px;
                          padding:10px;font-weight:bold;font-size:12px;margin-top:8px;}
             QPushButton:hover {background:#2a4365;}
             QPushButton:pressed {background:#1a365d;}
+            QPushButton:disabled {background:#cbd5e0;color:#718096;}
         """)
-        gen_btn.clicked.connect(self._generate)
-        content_lay.addWidget(gen_btn)
+        self.gen_btn.clicked.connect(self._generate)
+        content_lay.addWidget(self.gen_btn)
 
         self.reset_view_btn = QPushButton("🔍  Reset View")
         self.reset_view_btn.setStyleSheet("""
@@ -159,6 +162,7 @@ class Sidebar(QWidget):
             QPushButton:disabled {background:#cbd5e0;color:#718096;}
         """)
         self.reset_view_btn.clicked.connect(self._reset_view)
+        self.reset_view_btn.setEnabled(False)
         content_lay.addWidget(self.reset_view_btn)
 
         self.reset_btn = QPushButton("↺  Revert to Original")
@@ -207,12 +211,12 @@ class Sidebar(QWidget):
             self._toggle_btn.setText("◀ Hide")
 
     def _on_complexity_changed(self, level: str):
-        self.complexity_hint.setText(COMPLEXITY_LEVELS["Neutral"]["description"])
+        if level in COMPLEXITY_LEVELS:
+            self.complexity_hint.setText(COMPLEXITY_LEVELS[level]["description"])
         self._update_complexity_style(level)
 
     def _update_complexity_style(self, level: str):
-        colors = {"Neutral":  "#f59e0b", "Simple": "#10b981", "Standard": "#3b82f6", "Detailed": "#8b5cf6"}
-        c = colors.get(level, "#f59e0b")
+        c = "#f59e0b"
         self.complexity_combo.setStyleSheet(f"""
             QComboBox {{
                 color: #000000;
@@ -226,17 +230,12 @@ class Sidebar(QWidget):
             QComboBox QAbstractItemView {{ color: #000; background: #fff; }}
         """)
 
-    def _load_template(self, name):
-        templates = {
-            "Basic Distribution": "Main incoming supply at 415V, main circuit breaker, busbar distribution, neutral bar, earth bar, and load circuits for lights and sockets.",
-            "Industrial Panel":   "Three-phase 415V incoming supply, main MCCB breaker, copper busbar system, multiple outgoing MCBs for motors, neutral bar and earth bar.",
-            "Residential Board":  "Single-phase 230V supply, main MCB, individual circuit breakers for lighting, power sockets, kitchen appliances, with safety earth.",
-            "Three-Phase System": "Three-phase RYB supply at 415V, main breaker, busbar distribution, balanced load circuits, neutral return path, protective earth.",
-            "Safety Earth System":"Electrical safety diagram focused on earthing: main earth bar connections, circuit protective conductors, equipment earth points, neutral bar.",
-            "日本語: 基本的な配電": "主電源230V/415V、メインブレーカー、バスバー、中性線バー、接地バー、照明とコンセントの負荷回路を含む基本的な電力配電図。",
-        }
-        if name in templates:
-            self.prompt_text.setPlainText(templates[name])
+    def set_generating(self, generating: bool):
+        self.gen_btn.setEnabled(not generating)
+        if generating:
+            self.gen_btn.setText("⏳  Generating...")
+        else:
+            self.gen_btn.setText("⚡  Generate Diagram")
 
     def _generate(self):
         prompt = self.prompt_text.toPlainText().strip()
@@ -244,8 +243,10 @@ class Sidebar(QWidget):
             QMessageBox.warning(self, "Empty Prompt", "Please enter a diagram description.")
             return
         complexity = self.complexity_combo.currentText()
-        if hasattr(self.main_window, 'canvas'):
-            self.main_window.canvas.generate_from_prompt(prompt, complexity)
+        model_choice = self.model_combo.currentText()
+        if hasattr(self.main_window, 'canvas') and self.main_window.canvas:
+            self.set_generating(True)
+            self.main_window.canvas.generate_from_prompt(prompt, complexity, model_choice)
             # reset_btn is re-enabled by _finalise_generation once the diagram is ready
 
     def _reset_view(self):

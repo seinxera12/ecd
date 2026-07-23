@@ -103,10 +103,10 @@ This installs additional packages including:
 ### Step 5: Verify Installation
 
 ```bash
-# Test imports
+# Test core imports
 python -c "from PySide6.QtWidgets import QApplication; print('PySide6 OK')"
 python -c "import ezdxf; print('ezdxf OK')"
-python -c "import requests; requests.get('http://localhost:11434'); print('Ollama OK')"
+python -c "from ECD.erc import run_erc; print('ERC Engine OK')"
 ```
 
 ---
@@ -121,115 +121,101 @@ To launch the main desktop diagram app:
 python -m ECD.main_app
 ```
 
-### Running Scripts and Diagnostics
-To execute other utility, verification, or regression scripts in the repository:
+### Running Scripts, Verification, and ERC Tests
+To execute verification, diagnostic, or Electrical Rule Check test suites:
 ```bash
-# Verify DXF symbol wiring
-python -m ECD.scripts.verify_dxf_symbol_wiring
+# Run Electrical Rule Check (ERC) full 3-tier test suite
+python test_erc_rules.py
 
-# Verify Pin model connectivity checks
+# Verify Pin model connectivity and graph tracing
 python -m ECD.scripts.verify_pin_model
 
-# Run custom scratch tests
-python C:\Users\Administrator\.gemini\antigravity\brain\74378425-7dcb-45df-9acb-201ab2ece057\scratch\test_gemini_client_live.py
+# Verify DXF symbol wiring and rendering
+python -m ECD.scripts.verify_dxf_symbol_wiring
 ```
 
 ### Expected Behavior
 
-1. Application window opens (1400x900 pixels)
-2. Sidebar appears on left with input controls
-3. Welcome screen shows in main canvas area
-4. Status bar shows "Ready" message
+1. Application window opens (1400x900 pixels).
+2. Sidebar appears on the left with input controls and the **Model Selection** dropdown.
+3. Welcome screen displays in the central canvas area.
+4. Status bar displays "Ready".
 
-### Testing the Application
+### Testing Diagram Generation
 
 1. Enter a prompt in the text area, e.g.:
    ```
-   Main supply at 230V, main breaker, busbar, neutral bar, earth bar, and load circuits for lights and sockets.
+   Main supply at 230V, main breaker, RCD, busbar, neutral bar, earth bar, and load circuits for lights and sockets.
    ```
 
-2. Select complexity level:
-   - **Simple**: Phase wire only
-   - **Neutral**: Prompt-driven (recommended for testing)
-   - **Standard**: Full L/N/E with RCD
-   - **Detailed**: Complete with fault paths
+2. Select Model Backend from the dropdown:
+   - **Groq - Fast (Limited Daily Use)**: High-speed cloud model (`openai/gpt-oss-20b`).
+   - **Groq - Large (Higher Quality)**: Complex circuit cloud model (`openai/gpt-oss-120b`).
+   - **Gemini (Limited)**: Cloud model (`gemini-3.5-flash`).
+   - **Mistral (Unlimited, Offline)**: Local Ollama model (`mistral:7b-instruct`).
+   - **Qwen (Unlimited, Offline)**: Local Ollama model (`qwen2.5:7b-instruct`).
 
-3. Click **"⚡ Generate Diagram"**
+3. Select Detail Level:
+   - **Simple**: Phase wire only.
+   - **Neutral**: Prompt-driven components.
+   - **Standard**: Full L/N/E with RCD protection.
+   - **Detailed**: Complete distribution with fault paths.
 
-4. Wait for:
-   - Loading screen appears
-   - LLM parses prompt (~5-15 seconds)
-   - Diagram renders
-   - Validation panel shows results
-
-### Troubleshooting LLM Issues
-
-If generation fails:
-
-```bash
-# Check Ollama is running
-curl http://localhost:11434/api/tags
-
-# Check model is available
-ollama list
-
-# Test LLM directly
-ollama run mistral:7b-instruct "Hello, respond with OK"
-```
+4. Click **"⚡ Generate Diagram"**.
 
 ---
 
-## Build Process
+## Model Selection & Failure Fallback
 
-### Creating a Standalone Executable
+### Dynamic Model Selector
+Users can choose between Cloud APIs (Groq, Gemini) and Local Offline Models (Mistral, Qwen via Ollama) directly in the UI dropdown without modifying environment variables or restarting the app.
 
-The project includes a PyInstaller spec file for building an executable:
+### Automatic Local Regex Fallback
+If a Cloud API request fails due to:
+- Tokens Per Minute (TPM) / Requests Per Minute (RPM) rate limits (HTTP 429)
+- Daily API quota exhaustion
+- Network disconnect or timeout
+
+The application automatically falls back to its internal **Deterministic Local Regex Engine** (`parse_prompt()`), generating the diagram structure locally and surfacing a yellow warning banner in the validation panel:
+> `⚠️ [FALLBACK WARNING] The diagram was generated using the local regex fallback parser because the Groq LLM model was unavailable (e.g. rate limit exceeded, API offline, or network error).`
+
+---
+
+## Build Process (Standalone Executable)
+
+### Building via PyInstaller (`ECD.spec`)
+
+The project includes a production PyInstaller specification file (`ECD.spec`) configured for standalone Windows packaging:
 
 ```bash
 # Install PyInstaller
 pip install pyinstaller
 
-# Build executable
-pyinstaller DiagramGeneration.spec
+# Build standalone executable directory (dist/ECD/ECD.exe)
+pyinstaller ECD.spec --noconfirm
 ```
 
-### Build Output
+### Build Artifacts
+- **Output Directory**: `dist/ECD/`
+- **Executable**: `dist/ECD/ECD.exe`
+- **Spec File**: `ECD.spec`
 
-- Output directory: `dist/`
-- Executable: `DiagramGeneration.exe` (Windows)
-- Build artifacts: `build/`
-
-### Build Notes
-
-1. The spec file targets `Sequence.py` (may need update to `ECD/main_app.py`)
-2. WebEngine resources must be included
-3. Build size is large due to Qt and WebEngine
-
-### Common Build Issues
-
-**Issue**: Missing modules
-```
-Solution: Add hidden imports to spec file:
-hiddenimports=['PySide6.QtWebEngineWidgets', 'PySide6.QtWebChannel']
-```
-
-**Issue**: WebEngine not working
-```
-Solution: Ensure all PySide6 packages are included
-```
+### Spec File Configuration Highlights
+1. **Entry Point**: `ECD/main_app.py`
+2. **Frozen `.env` Resolution**: `main_app.py` dynamically resolves `.env` from `os.path.dirname(sys.executable)` when frozen, allowing users to place `.env` side-by-side with `ECD.exe`.
+3. **Data Assets (`datas`)**: Bundles IEC symbol SVGs from `ECD/assets/symbols/*.svg`.
+4. **Hidden Imports (`hiddenimports`)**: Explicitly includes `ezdxf`, `matplotlib` backends (`backend_qtagg`, `backend_svg`, `backend_pdf`), `PySide6.QtSvg`, `groq`, `google.genai`, `dotenv`, and `PIL`.
 
 ---
 
 ## Environment Variables
 
-The application can be configured using environment variables loaded from a `.env` file at the project root, or set dynamically in your terminal shell.
+The application configures API keys and defaults using a `.env` file placed at the project root (or next to `ECD.exe` in built executables).
 
-### LLM Backend Selection (`ECD_LLM_BACKEND`)
-Defines which LLM backend the application uses for diagram generation and parsing.
-- **Value options**:
-  - `ollama` (Default, offline, shipping path): Local Ollama server.
-  - `groq` (Cloud): Fast cloud hosted models.
-  - `gemini` (Cloud): Google Gemini models.
+### Key Variables
+- **`GROQ_API_KEY`**: API key from Groq console (for Groq models).
+- **`GEMINI_API_KEY`**: Google AI Studio API key (for Gemini models).
+- **`ECD_LLM_BACKEND`**: Fallback backend if no UI selection is active (`groq`, `gemini`, `ollama`).
 
 ### Changing the Backend LLM via Terminal
 You can temporarily or permanently override the active backend directly from your terminal before running the application:

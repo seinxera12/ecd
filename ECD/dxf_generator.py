@@ -34,8 +34,6 @@ try:
 except ImportError:
     import pin_model, symbols
 
-
-
 @dataclass
 class Node:
     id: str
@@ -43,16 +41,13 @@ class Node:
     group: Optional[str] = None
     order: int = 0
 
-
 @dataclass
 class Edge:
     src: str
     dst: str
     msg: str = ""
 
-
 # ── Drawing constants (all in mm) ────────────────────────────────────────────
-
 BOX_W        = 60       # component box width
 BOX_H        = 20       # component box height
 V_GAP        = 18       # vertical gap between boxes (centre-to-centre addition)
@@ -76,7 +71,6 @@ COL_L1      = colors.RED     # 1: Red
 COL_L2      = colors.YELLOW  # 2: Yellow
 COL_L3      = 30             # 30: Orange
 
-
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _clean(label: str) -> str:
@@ -90,11 +84,9 @@ def _cx(x: float) -> float:
     """Return centre-x of a box whose left edge is at x."""
     return x + BOX_W / 2
 
-
 def _cy(y: float) -> float:
     """Return centre-y of a box whose bottom edge is at y."""
     return y + BOX_H / 2
-
 
 def _draw_box(msp, x: float, y: float, label: str,
               sublabel: str = "", layer: str = "COMPONENTS") -> None:
@@ -140,7 +132,6 @@ def _draw_box(msp, x: float, y: float, label: str,
             },
         ).set_placement((cx, cy), align=TextEntityAlignment.MIDDLE_CENTER)
 
-
 def _draw_wire(msp, pts: list[tuple[float, float]],
                color: int = COL_PHASE,
                layer: str = "WIRES_PHASE",
@@ -158,7 +149,6 @@ def _draw_wire(msp, pts: list[tuple[float, float]],
         close=False,
     )
 
-
 def _draw_label(msp, x: float, y: float, text: str,
                 height: float = FONT_H_SMALL,
                 color: int = COL_PHASE,
@@ -168,10 +158,8 @@ def _draw_label(msp, x: float, y: float, text: str,
         dxfattribs={"layer": layer, "height": height, "color": color},
     ).set_placement((x, y), align=TextEntityAlignment.MIDDLE_LEFT)
 
-
 def _add_linetypes(doc) -> None:
     ezdxf.setup_linetypes(doc)
-
 
 # ── Tiered page sizes (landscape, in mm) ─────────────────────────────────────
 PAGE_SIZES = {
@@ -197,7 +185,6 @@ def _get_page_size(n_circuits: int, phase_mode: str = "single") -> tuple[float, 
         return PAGE_SIZES["CUSTOM_15"]
     else:
         return PAGE_SIZES["A2"]
-
 
 def _add_layers(doc) -> None:
     layers_def = {
@@ -317,6 +304,8 @@ def ensure_connections(parsed_data: dict) -> list[tuple[str, str]]:
         for cid in component_ids:
             cid_lower = cid.lower()
             bt = get_base_type(cid_lower)
+            if "spare" in cid_lower or "unwired" in cid_lower or "orphan" in cid_lower:
+                continue
             if cid_lower in ["supply", "maincb", "rcd", "rcbo", "bus"] or (
                 cid_lower not in known_types 
                 and bt != "outcb" 
@@ -1151,8 +1140,6 @@ def export_dxf(parsed_data: dict, output_path: str = None) -> Optional[ezdxf.doc
                     _draw_wire(msp, [(x_val, uy_min), (x_val, uy_max)], color=color, layer=layer, linetype=linetype, lineweight=lineweight)
                     covered_y_intervals[(wtype, x_val)].append((uy_min, uy_max))
 
-
-    # Draw daisy-chained Neutral and Earth wires to loads to prevent overlapping horizontal runs
     # Draw daisy-chained Neutral and Earth wires to loads to prevent overlapping horizontal runs
     load_n_conns = []
     load_e_conns = []
@@ -1602,10 +1589,6 @@ def export_dxf(parsed_data: dict, output_path: str = None) -> Optional[ezdxf.doc
         fh.write(raw)
     return doc
 
-def mermaid_to_dxf(mermaid_code: str, output_path: str):
-    nodes, edges = parse_mermaid_sequence(mermaid_code)
-    parsed_data = normalize_for_dxf(nodes, edges)
-    export_dxf(parsed_data, output_path)
 
 def _get_cjk_font_face():
     """Find system Japanese CJK font face for ezdxf rendering context."""

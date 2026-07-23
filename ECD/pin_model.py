@@ -38,29 +38,60 @@ class PinDef:
 #
 # Neutral and Earth trunk rails run at x = -45.0 and x = -60.0 relative to the L spine.
 
-def determine_phase_mode(voltage: str | float | None, phase_hint: str | None) -> str:
-    """Determine phase mode ('single' or 'three') deterministically."""
-    if phase_hint:
+def determine_phase_mode_detailed(voltage: str | float | None, phase_hint: str | None) -> tuple[str, str | None, str | None]:
+    """Determine phase mode ('single' or 'three') along with detailed reasoning metadata.
+    
+    Returns
+    -------
+    (phase_mode, reason_code, reason_message)
+        reason_code: 'OVERRIDE', 'INFERRED', or None if unambiguous.
+    """
+    has_hint = bool(phase_hint and str(phase_hint).strip())
+    hint_mode = None
+    if has_hint:
         hint_lower = str(phase_hint).lower()
         if "three" in hint_lower or "3" in hint_lower:
-            return "three"
-        if "single" in hint_lower or "1" in hint_lower:
-            return "single"
-            
-    if voltage is None:
-        return "single"
-        
+            hint_mode = "three"
+        elif "single" in hint_lower or "1" in hint_lower:
+            hint_mode = "single"
+
+    # Parse numeric voltage
+    v_val = None
+    v_str = str(voltage) if voltage is not None else ""
     if isinstance(voltage, (int, float)):
-        val = float(voltage)
-    else:
-        # String robust parsing
-        match = re.search(r"(\d+(?:\.\d+)?)", str(voltage))
+        v_val = float(voltage)
+    elif voltage is not None:
+        match = re.search(r"(\d+(?:\.\d+)?)", v_str)
         if match:
-            val = float(match.group(1))
-        else:
-            val = 230.0  # default fallback
-            
-    return "three" if val >= 400.0 else "single"
+            v_val = float(match.group(1))
+
+    v_implied_mode = "three" if (v_val is not None and v_val >= 400.0) else "single" if (v_val is not None and v_val <= 250.0) else None
+
+    # Case 1: Explicit hint overrides implied voltage
+    if hint_mode and v_implied_mode and hint_mode != v_implied_mode:
+        v_desc = f"{int(v_val)}V" if (v_val and v_val.is_integer()) else f"{voltage}"
+        msg = f"Voltage {v_desc} is typically {v_implied_mode}-phase, but '{phase_hint}' was explicitly requested — diagram generated as {hint_mode}-phase."
+        return (hint_mode, "OVERRIDE", msg)
+
+    if hint_mode:
+        return (hint_mode, None, None)
+
+    # Case 2: No phase hint given, phase mode inferred from voltage
+    if v_val is not None:
+        inferred_mode = "three" if v_val >= 400.0 else "single"
+        if v_val >= 400.0:
+            v_desc = f"{int(v_val)}V" if v_val.is_integer() else f"{voltage}"
+            msg = f"No phase specified — inferred three-phase from stated voltage {v_desc}."
+            return (inferred_mode, "INFERRED", msg)
+        return (inferred_mode, None, None)
+
+    return ("single", None, None)
+
+
+def determine_phase_mode(voltage: str | float | None, phase_hint: str | None) -> str:
+    """Determine phase mode ('single' or 'three') deterministically."""
+    mode, _, _ = determine_phase_mode_detailed(voltage, phase_hint)
+    return mode
 
 
 COMPONENT_PINS: dict[str, dict[str, list[PinDef]]] = {
@@ -224,6 +255,8 @@ PIN_WIRING_RULES: dict[tuple[str, str], list[tuple[str, str]]] = {
 def get_base_type(component_id: str) -> str:
     """Normalize dynamic IDs (e.g. 'outcb_1' -> 'outcb', 'load_1' -> 'loads')."""
     cid = component_id.lower()
+    if re.match(r'^(supply|grid|mains|source)(?:_|\d|\b|$)', cid):
+        return "supply"
     if re.match(r'^(outcb|outgoingcb|outcr|outgoingcr|mcb|cb)(?:_|\d|\b|$)', cid):
         return "outcb"
     if re.match(r'^(loads?|socket|outlet|lamp|motor|heater|charger|lighting|pump|fan|ac|aircon|ev|cooker|oven|hob|appliance|device)(?:_|\d|\b|$)', cid):
@@ -731,11 +764,6 @@ def validate_netlist(netlist: dict) -> tuple[bool, list[str]]:
     has_ebar = "ebar" in components
     has_supply = "supply" in components
     
-    if show_neutral and not has_nbar:
-        errors.append("Validation Error: Neutral connections are enabled, but the Neutral bar (nbar) component is missing.")
-    if show_earth and not has_ebar:
-        errors.append("Validation Error: Earth connections are enabled, but the Earth bar (ebar) component is missing.")
-        
     if not load_ids:
         errors.append("Validation Error: No load components found in netlist.")
         return False, errors
