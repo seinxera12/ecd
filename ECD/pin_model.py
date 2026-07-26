@@ -94,6 +94,7 @@ def determine_phase_mode(voltage: str | float | None, phase_hint: str | None) ->
     return mode
 
 
+
 COMPONENT_PINS: dict[str, dict[str, list[PinDef]]] = {
     "supply": {
         "single": [

@@ -383,6 +383,7 @@ class MermaidGenerator:
                     "prompt": prompt_text}
         if custom_conns:
             ret_dict["connections"] = custom_conns
+
         return ret_dict
 
     def get_default_components(self, language, voltage_text="230V / 415V", complexity_level="Standard"):

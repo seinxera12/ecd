@@ -1433,13 +1433,13 @@ class DiagramCanvas(QWidget):
         try:
             nodes, edges = parse_mermaid_sequence(fixed_code)
             parsed_data = normalize_for_dxf(nodes, edges)
-            # Preserve flags and voltage
             if self.current_parsed_data:
                 parsed_data["flags"] = self.current_parsed_data.get("flags", {})
                 parsed_data["voltage"] = self.current_parsed_data.get("voltage", "")
                 parsed_data["language"] = self.current_parsed_data.get("language", "en")
                 parsed_data["complexity"] = self.current_parsed_data.get("complexity", "Standard")
                 parsed_data["prompt"] = self.current_parsed_data.get("prompt", self._last_prompt)
+
             self.current_parsed_data = parsed_data
             
             self.current_doc = export_dxf(parsed_data, None)

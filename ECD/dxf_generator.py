@@ -228,6 +228,16 @@ def extract_circuit_info(cb_id: str, label_text: str) -> tuple[str, str]:
         desc = parts[0] if parts else label_text
         
     desc = re.sub(r'\s*\(\s*\d+\s*A\s*\)', '', desc, flags=re.IGNORECASE).strip()
+
+    if not rating:
+        cb_lower = cb_id.lower()
+        if "maincb" in cb_lower:
+            rating = "100A"
+        elif "rcd" in cb_lower or "rcbo" in cb_lower:
+            rating = "30mA"
+        else:
+            rating = "16A"
+
     return desc, rating
 
 
@@ -735,6 +745,7 @@ def export_dxf(parsed_data: dict, output_path: str = None) -> Optional[ezdxf.doc
         (voltage_line, FONT_H_MAIN + 0.5),
         ("ELECTRICAL DISTRIBUTION DIAGRAM", FONT_H_MAIN + 2.5),  # Main heading (increased size)
     ]
+
     tx = (min(x_coords) + max(x_coords)) / 2.0
     max_main_y = max(y_coords) if y_coords else 100.0
     ty = max_main_y + 12.0
@@ -751,6 +762,8 @@ def export_dxf(parsed_data: dict, output_path: str = None) -> Optional[ezdxf.doc
             t_ent.label_id = label_id
             title_entities.append(t_ent)
             ty += font_h * 1.85
+
+    top_title_y = ty
 
     # ── Draw component symbols ────────────────────────────────────────────────
     # Ensure symbols are registered
@@ -995,7 +1008,7 @@ def export_dxf(parsed_data: dict, output_path: str = None) -> Optional[ezdxf.doc
         display_text = text_overrides.get(label_id, default_n_text)
         t_ent = msp.add_text(
             display_text,
-            dxfattribs={"height": FONT_H_SMALL + 0.5, "layer": "NOTES", "color": COL_TITLE}
+            dxfattribs={"height": FONT_H_SMALL + 0.5, "layer": "WIRE_LABELS", "color": COL_TITLE}
         )
         t_ent.set_placement((nx, ny), align=TextEntityAlignment.BOTTOM_CENTER)
         t_ent.label_id = label_id
@@ -1008,7 +1021,7 @@ def export_dxf(parsed_data: dict, output_path: str = None) -> Optional[ezdxf.doc
         display_text = text_overrides.get(label_id, default_e_text)
         t_ent = msp.add_text(
             display_text,
-            dxfattribs={"height": FONT_H_SMALL + 0.5, "layer": "NOTES", "color": COL_TITLE}
+            dxfattribs={"height": FONT_H_SMALL + 0.5, "layer": "WIRE_LABELS", "color": COL_TITLE}
         )
         t_ent.set_placement((ex, ey), align=TextEntityAlignment.BOTTOM_CENTER)
         t_ent.label_id = label_id
@@ -1705,7 +1718,7 @@ def render_entities_to_svg(doc: ezdxf.document.Drawing, entities: list) -> str:
     return backend.get_string(page=page)
 
 def get_group_entities(doc: ezdxf.document.Drawing, group_name: str) -> list:
-    """Classify modelspace entities into four groups: title_block, legend, load_schedule, main_diagram."""
+    """Classify modelspace entities into five groups: title_block, legend, load_schedule, generation_notes, main_diagram."""
     msp = doc.modelspace()
     entities = []
     for entity in msp:
@@ -1713,13 +1726,14 @@ def get_group_entities(doc: ezdxf.document.Drawing, group_name: str) -> list:
         if layer == "PAGE_MARGIN":
             continue
             
-        ent_group = "main_diagram"
         if layer == "TITLE":
             ent_group = "title_block"
         elif layer == "LEGEND":
             ent_group = "legend"
         elif layer == "LOAD_SCHEDULE":
             ent_group = "load_schedule"
+        elif layer == "NOTES":
+            ent_group = "generation_notes"
         else:
             ent_group = "main_diagram"
             

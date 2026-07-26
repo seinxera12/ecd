@@ -56,28 +56,19 @@ source venv/bin/activate
 
 ### Step 3: Install Dependencies
 
-**Option A: Minimal Installation**
-```bash
-pip install -r requirement.txt
-```
-
-This installs only the core dependencies:
-- `ezdxf==1.4.3` - DXF file generation
-- `PySide6==6.10.1` - Qt GUI framework
-- `matplotlib` - Required for rendering and exporting diagrams as PNG and PDF files (ezdxf drawing addon)
-
-**Option B: Full Installation**
 ```bash
 pip install -r requirements.txt
 ```
 
-This installs additional packages including:
-- Machine learning libraries (tensorflow, torch)
-- Web frameworks (fastapi, streamlit)
-- Various utilities
-- `matplotlib` and other CAD dependencies
-
-> **Note**: The full requirements.txt appears to include packages not required for basic operation. Use minimal installation (Option A) with matplotlib unless you need specific features.
+This installs the ECD project dependencies:
+- `ezdxf==1.4.3` - DXF file generation
+- `PySide6==6.10.1` - Qt GUI framework
+- `requests==2.34.2` - HTTP API client for LLM services
+- `pillow==12.3.0` - Image processing and export
+- `matplotlib` - CAD rendering for PNG/PDF export
+- `python-dotenv` - Environment variable configuration
+- `groq`, `google-genai` - Cloud LLM integration
+- `pyinstaller` - Standalone executable packaging
 
 ### Step 4: Install Ollama
 
@@ -353,7 +344,7 @@ pip install PySide6-WebEngine
 - Try disabling hardware acceleration:
   ```bash
   set QT_QUICK_BACKEND=software
-  python main_app.py
+  python -m ECD.main_app
   ```
 
 ---
@@ -386,7 +377,7 @@ LLM inference requires significant memory. If the application crashes:
 
 ```bash
 # Run application
-python ECD/main_app.py
+python -m ECD.main_app
 
 # Check Python version
 python --version
@@ -555,7 +546,7 @@ logging.debug(f"LLM response time: {response.elapsed.total_seconds()}s")
 2. **Make changes and test**
    ```bash
    # Edit files
-   python ECD/main_app.py  # Test
+   python -m ECD.main_app  # Test
    ```
 
 3. **Commit frequently**
