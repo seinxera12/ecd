@@ -59,8 +59,8 @@ WIRE_OFFSET  = 2        # small inset so wires meet box edges cleanly
 
 # Colours (AutoCAD colour index)
 COL_PHASE   = colors.RED
-COL_NEUTRAL = colors.BLUE
-COL_EARTH   = colors.GREEN
+COL_NEUTRAL = colors.GREEN
+COL_EARTH   = colors.BLUE
 COL_FAULT   = colors.MAGENTA
 COL_BOX     = colors.WHITE
 COL_TEXT    = colors.WHITE
@@ -633,10 +633,23 @@ def export_dxf(parsed_data: dict, output_path: str = None) -> Optional[ezdxf.doc
     phase_mode = pin_model.determine_phase_mode(voltage, phase_hint)
 
     box_positions = pin_model.compute_component_positions(parsed_data, phase_mode=phase_mode)
+    
+    # Apply per-symbol component_position_overrides to box_positions (Phase 4 export integration)
+    comp_overrides = parsed_data.get("component_position_overrides", {})
+    if comp_overrides:
+        for cid, ov_data in comp_overrides.items():
+            if isinstance(ov_data, dict) and "position" in ov_data:
+                pos = ov_data["position"]
+                if len(pos) >= 2:
+                    box_positions[str(cid)] = (float(pos[0]), float(pos[1]))
+
     netlist = pin_model.generate_netlist(parsed_data, box_positions)
     
     # ── Create DXF document ───────────────────────────────────────────────────
     doc = ezdxf.new(dxfversion="R2010")
+    doc.netlist = netlist
+    doc.box_positions = box_positions
+    doc.phase_mode = phase_mode
     doc.header["$INSUNITS"]   = 4  # millimetres
     doc.header["$MEASUREMENT"] = 1  # metric
     doc.header["$LUNITS"]     = 4  # millimetres
@@ -800,7 +813,8 @@ def export_dxf(parsed_data: dict, output_path: str = None) -> Optional[ezdxf.doc
             block_name = "SYM_GENERIC"
             
         if block_name:
-            msp.add_blockref(block_name, insert=(bx, by))
+            bref = msp.add_blockref(block_name, insert=(bx, by))
+            bref.component_id = cid
             
         # Draw labels for components
         label = comp_map.get(cid)
@@ -864,6 +878,7 @@ def export_dxf(parsed_data: dict, output_path: str = None) -> Optional[ezdxf.doc
             )
             t_ent.set_placement((bx + offset, by), align=TextEntityAlignment.MIDDLE_LEFT)
             t_ent.label_id = label_id
+            t_ent.component_id = cid
         elif base_type in ["loads", "nbar", "ebar"]:
             # Labels for loads are drawn in the Load Schedule on the right side of the sheet.
             # Labels for nbar/ebar are drawn at the top of the vertical rails above the figure.
@@ -884,6 +899,7 @@ def export_dxf(parsed_data: dict, output_path: str = None) -> Optional[ezdxf.doc
             )
             t_ent.set_placement((bx + x_offset, by + y_offset), align=TextEntityAlignment.MIDDLE_LEFT)
             t_ent.label_id = label_id
+            t_ent.component_id = cid
             
             if sub_lbl:
                 label_id_sub = f"{cid}.rating"
@@ -894,11 +910,13 @@ def export_dxf(parsed_data: dict, output_path: str = None) -> Optional[ezdxf.doc
                 )
                 t_ent_sub.set_placement((bx + x_offset, by - 3.0 + y_offset), align=TextEntityAlignment.MIDDLE_LEFT)
                 t_ent_sub.label_id = label_id_sub
+                t_ent_sub.component_id = cid
                       
     # Insert ground symbol below ebar
     if "ebar" in box_positions:
         ex, ey = box_positions["ebar"]
-        msp.add_blockref("SYM_GROUND", insert=(ex, ey - 20.0))
+        gnd_ref = msp.add_blockref("SYM_GROUND", insert=(ex, ey - 20.0))
+        gnd_ref.component_id = "ebar"
         label_id = "gnd.label"
         display_text = text_overrides.get(label_id, "GND")
         t_ent = msp.add_text(
@@ -907,6 +925,7 @@ def export_dxf(parsed_data: dict, output_path: str = None) -> Optional[ezdxf.doc
         )
         t_ent.set_placement((ex - 6.0, ey - 20.0), align=TextEntityAlignment.MIDDLE_RIGHT)
         t_ent.label_id = label_id
+        t_ent.component_id = "ebar"
 
     # ── Draw wires from netlist connections ──────────────────────────────────
     nbar_x = box_positions["nbar"][0] if "nbar" in box_positions else -45.0
@@ -999,10 +1018,10 @@ def export_dxf(parsed_data: dict, output_path: str = None) -> Optional[ezdxf.doc
         )
         covered_y_intervals[("E", ebar_x)].append((y_min, y_max))
 
-    # Draw NBar / EBar Labels above the vertical rails
+    # Draw NBar / EBar Labels above the symbol boxes
     if "nbar" in box_positions:
-        nx = nbar_x
-        ny = max(nbar_y_coords) + 3.0 if nbar_y_coords else box_positions["nbar"][1] + 10.0
+        nx = box_positions["nbar"][0] - 25.0
+        ny = box_positions["nbar"][1] + 5.5
         label_id = "nbar.title"
         default_n_text = "NBar"
         display_text = text_overrides.get(label_id, default_n_text)
@@ -1010,12 +1029,13 @@ def export_dxf(parsed_data: dict, output_path: str = None) -> Optional[ezdxf.doc
             display_text,
             dxfattribs={"height": FONT_H_SMALL + 0.5, "layer": "WIRE_LABELS", "color": COL_TITLE}
         )
-        t_ent.set_placement((nx, ny), align=TextEntityAlignment.BOTTOM_CENTER)
+        t_ent.set_placement((nx, ny), align=TextEntityAlignment.BOTTOM_LEFT)
         t_ent.label_id = label_id
+        t_ent.component_id = "nbar"
 
     if "ebar" in box_positions:
-        ex = ebar_x
-        ey = max(ebar_y_coords) + 3.0 if ebar_y_coords else box_positions["ebar"][1] + 10.0
+        ex = box_positions["ebar"][0] - 25.0
+        ey = box_positions["ebar"][1] + 5.5
         label_id = "ebar.title"
         default_e_text = "EBar"
         display_text = text_overrides.get(label_id, default_e_text)
@@ -1023,8 +1043,9 @@ def export_dxf(parsed_data: dict, output_path: str = None) -> Optional[ezdxf.doc
             display_text,
             dxfattribs={"height": FONT_H_SMALL + 0.5, "layer": "WIRE_LABELS", "color": COL_TITLE}
         )
-        t_ent.set_placement((ex, ey), align=TextEntityAlignment.BOTTOM_CENTER)
+        t_ent.set_placement((ex, ey), align=TextEntityAlignment.BOTTOM_LEFT)
         t_ent.label_id = label_id
+        t_ent.component_id = "ebar"
 
     # Compile junction dots set
     junction_dots = set()
@@ -1752,3 +1773,31 @@ def get_group_graphics_and_text(doc: ezdxf.document.Drawing, group_name: str) ->
         else:
             graphics.append(ent)
     return graphics, text_entities
+
+def get_per_symbol_graphics_and_text(doc: ezdxf.document.Drawing) -> tuple[dict, tuple[list, list]]:
+    """
+    Extract main_diagram entities into per-symbol maps (by component_id)
+    and return (symbol_map, (static_graphics, static_texts)).
+    symbol_map: dict[cid, (graphics, text_entities)]
+    """
+    main_ents = get_group_entities(doc, "main_diagram")
+    symbol_map = {}
+    static_graphics = []
+    static_texts = []
+
+    for ent in main_ents:
+        cid = getattr(ent, "component_id", None)
+        if cid:
+            if cid not in symbol_map:
+                symbol_map[cid] = ([], [])
+            if ent.dxftype() in ("TEXT", "MTEXT"):
+                symbol_map[cid][1].append(ent)
+            else:
+                symbol_map[cid][0].append(ent)
+        else:
+            if ent.dxftype() in ("TEXT", "MTEXT"):
+                static_texts.append(ent)
+            else:
+                static_graphics.append(ent)
+
+    return symbol_map, (static_graphics, static_texts)

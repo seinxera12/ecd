@@ -154,11 +154,13 @@ class MainWindow(QMainWindow):
                 self.canvas.original_parsed_data = data.copy()
                 
                 # Clear and render
+                self.canvas.undo_manager.clear()
                 self.canvas.refresh_diagram()
                 
                 layout_overrides = data.get("layout_overrides", {})
                 text_overrides = data.get("text_overrides", {})
-                if layout_overrides or text_overrides:
+                comp_overrides = data.get("component_position_overrides", {})
+                if layout_overrides or text_overrides or comp_overrides:
                     self.sidebar.reset_btn.setEnabled(True)
                 else:
                     self.sidebar.reset_btn.setEnabled(False)

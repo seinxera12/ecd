@@ -9,6 +9,22 @@ from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtSvgWidgets import QGraphicsSvgItem
 import os
 
+def route_diagram_wire(src_cid: str, dst_cid: str, wtype: str, qt_src: tuple, qt_dst: tuple) -> list:
+    """Generate orthogonal wire points with neutral and earth daisy chain bus bar logic matching DXF layout."""
+    try:
+        from ECD.dxf_generator import route_wire_bend
+    except ImportError:
+        from dxf_generator import route_wire_bend
+
+    if wtype == "N" and dst_cid.startswith("load"):
+        qt_y_bend = qt_dst[1] + 10.0
+        return [qt_src, (qt_src[0], qt_y_bend), (qt_dst[0], qt_y_bend), qt_dst]
+    elif wtype == "E" and (dst_cid.startswith("load") or src_cid == "ebar"):
+        qt_y_bend = qt_dst[1] + 22.0
+        return [qt_src, (qt_src[0], qt_y_bend), (qt_dst[0], qt_y_bend), qt_dst]
+    return route_wire_bend(qt_src, qt_dst)
+
+
 class EditableTextItem(QGraphicsTextItem):
     def __init__(self, label_id: str, parent_group, parent_view):
         super().__init__()
@@ -24,6 +40,7 @@ class EditableTextItem(QGraphicsTextItem):
                 if isinstance(item, EditableTextItem) and item is not self and item._is_editing:
                     item.stop_editing()
         
+        self._initial_text_before_edit = self.toPlainText()
         self._is_editing = True
         # Disable parent group event handling so this item can receive mouse focus/clicks
         self.parent_group.setHandlesChildEvents(False)
@@ -47,7 +64,9 @@ class EditableTextItem(QGraphicsTextItem):
         # Re-enable parent group event handling
         self.parent_group.setHandlesChildEvents(True)
         new_text = self.toPlainText().strip()
-        self.parent_view.store_text_override(self.label_id, new_text)
+        old_text = getattr(self, "_initial_text_before_edit", new_text)
+        if new_text != old_text:
+            self.parent_view.store_text_override(self.label_id, new_text, old_text)
 
     def focusOutEvent(self, event):
         self.stop_editing()
@@ -142,6 +161,10 @@ class DiagramGroupItem(QGraphicsItemGroup):
                 painter.drawRect(pt.x() - h_sz / 2.0, pt.y() - h_sz / 2.0, h_sz, h_sz)
 
     def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_start_pos = self.pos()
+            self._drag_start_scale = self.scale()
+
         if self.isSelected():
             rect = self.boundingRect()
             current_scale = self.scale()
@@ -236,10 +259,12 @@ class DiagramGroupItem(QGraphicsItemGroup):
             super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
+        old_p = getattr(self, "_drag_start_pos", self.pos())
+        old_s = getattr(self, "_drag_start_scale", self.scale())
         if self.is_resizing:
             self.is_resizing = False
             self.active_handle = None
-            self.parent_view.store_layout_override(self.name, self.pos(), self.scale())
+            self.parent_view.store_layout_override(self.name, self.pos(), self.scale(), old_p, old_s)
             # Force full scene repaint to clear any stale paint residue
             if self.scene():
                 self.scene().update()
@@ -248,7 +273,7 @@ class DiagramGroupItem(QGraphicsItemGroup):
             event.accept()
         else:
             super().mouseReleaseEvent(event)
-            self.parent_view.store_layout_override(self.name, self.pos(), self.scale())
+            self.parent_view.store_layout_override(self.name, self.pos(), self.scale(), old_p, old_s)
             if self.parent_view.is_at_100_percent():
                 self.parent_view.fit_to_view()
 
@@ -262,9 +287,122 @@ class DiagramGroupItem(QGraphicsItemGroup):
         super().mouseDoubleClickEvent(event)
 
 
+class SymbolItem(QGraphicsItemGroup):
+    """
+    Represents an individual, movable, selectable symbol within the Main Diagram.
+    Contains the symbol graphic and its permanently attached label.
+    """
+    def __init__(self, cid: str, parent_view: QGraphicsView):
+        super().__init__()
+        self.cid = str(cid)
+        self.parent_view = parent_view
+        self.is_locked = False
+        self._drag_start_pos = None
+        self._initial_positions = {}
+        self._drag_threshold_exceeded = False
+
+        self.setFlags(
+            QGraphicsItem.GraphicsItemFlag.ItemIsMovable |
+            QGraphicsItem.GraphicsItemFlag.ItemIsSelectable |
+            QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges
+        )
+        self.setHandlesChildEvents(True)
+        self.setZValue(1.0)
+
+    def toggle_lock(self):
+        self.is_locked = not self.is_locked
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, not self.is_locked)
+        self.update()
+
+    def itemChange(self, change, value):
+        if change == QGraphicsItem.GraphicsItemChange.ItemSelectedChange:
+            if value:
+                self.setZValue(100.0)
+            else:
+                self.setZValue(1.0)
+            self.update()
+        return super().itemChange(change, value)
+
+    def paint(self, painter, option, widget=None):
+        super().paint(painter, option, widget)
+        if self.isSelected():
+            pen = QPen(QColor(0, 150, 255), 1.5, Qt.PenStyle.DashLine)
+            pen.setCosmetic(True)
+            painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(self.boundingRect())
+        if self.is_locked:
+            pen = QPen(QColor(229, 62, 62), 1.5)
+            pen.setCosmetic(True)
+            painter.setPen(pen)
+            painter.setBrush(QBrush(QColor(229, 62, 62)))
+            rect = self.boundingRect()
+            painter.drawRect(rect.left() + 2, rect.top() + 2, 6, 6)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_start_pos = event.scenePos()
+            self._drag_threshold_exceeded = False
+            scene = self.scene()
+            if scene:
+                # Capture initial positions of all unlocked selected symbols for multi-drag (Q23)
+                selected_symbols = [
+                    item for item in scene.selectedItems()
+                    if isinstance(item, SymbolItem) and not item.is_locked
+                ]
+                if self not in selected_symbols and not self.is_locked:
+                    selected_symbols.append(self)
+                self._initial_positions = {item: item.pos() for item in selected_symbols}
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._drag_start_pos and (event.buttons() & Qt.MouseButton.LeftButton):
+            delta_vec = event.scenePos() - self._drag_start_pos
+            # Enforce drag threshold (Q13)
+            if not self._drag_threshold_exceeded:
+                if delta_vec.manhattanLength() >= QApplication.startDragDistance():
+                    self._drag_threshold_exceeded = True
+                else:
+                    return
+
+            if self._drag_threshold_exceeded:
+                # Multi-symbol drag: translate all unlocked selected symbols together, preserving relative spacing (Q23)
+                moved_cids = set()
+                for item, start_pos in self._initial_positions.items():
+                    item.setPos(start_pos + delta_vec)
+                    moved_cids.add(item.cid)
+                # Live wire routing update during drag for connected wires only (Q12, Q21)
+                self.parent_view.update_connected_wires(moved_cids)
+                return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        super().mouseReleaseEvent(event)
+        if self._drag_threshold_exceeded and self._initial_positions:
+            # Commit updated positions to component_position_overrides and record 1 undo action (Q10, Q17)
+            moved_overrides = {}
+            for item in self._initial_positions:
+                bx = getattr(item, "base_x", 0.0)
+                by = getattr(item, "base_y", 0.0)
+                moved_overrides[item.cid] = [bx + item.pos().x(), by - item.pos().y()]
+            self.parent_view.store_component_position_overrides(moved_overrides, self._initial_positions)
+        self._drag_start_pos = None
+        self._drag_threshold_exceeded = False
+
+    def mouseDoubleClickEvent(self, event):
+        click_pos = event.pos()
+        # Double-clicking ONLY the label enters text-edit mode (Q3, Q16)
+        for child in self.childItems():
+            if isinstance(child, EditableTextItem) and child.contains(child.mapFromParent(click_pos)):
+                child.start_editing()
+                event.accept()
+                return
+        super().mouseDoubleClickEvent(event)
+
+
 class SvgPreviewWidget(QGraphicsView):
     """QGraphicsView-based interactive viewer for the electrical diagram.
-    Displays the diagram as 4 distinct, selectable, and editable groups.
+    Displays the diagram with individually selectable, movable symbols and 3 grouped doc sections.
     """
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -280,15 +418,20 @@ class SvgPreviewWidget(QGraphicsView):
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         
+        # Rubber-band marquee selection configuration (intersection-based, direction invariant - Q1)
+        self.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
+        self.setRubberBandSelectionMode(Qt.ItemSelectionMode.IntersectsItemBoundingRect)
+
         # Style to set navy/slate background matching export theme (#212830) and hide borders
         self.setBackgroundBrush(QBrush(QColor("#212830")))
         self.setFrameShape(QFrame.Shape.NoFrame)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        # Use FullViewportUpdate to prevent stale paint residue after group resize/transforms
+        # Use FullViewportUpdate to prevent stale paint residue
         self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.FullViewportUpdate)
         
         self.group_items = {}
+        self.symbol_items = {}
         self.selected_group = None
         self.scene.selectionChanged.connect(self._on_selection_changed)
 
@@ -310,67 +453,344 @@ class SvgPreviewWidget(QGraphicsView):
             if not selected:
                 self.selected_group = None
 
-    def store_layout_override(self, group_name: str, pos: QPointF, scale: float):
-        if self.canvas_parent and self.canvas_parent.current_parsed_data is not None:
-            data = self.canvas_parent.current_parsed_data
-            overrides = data.setdefault("layout_overrides", {})
+    def keyPressEvent(self, event):
+        # Check if text is currently being edited in the scene
+        focus_item = self.scene.focusItem()
+        if isinstance(focus_item, EditableTextItem) or any(
+            isinstance(item, EditableTextItem) and getattr(item, "_is_editing", False)
+            for item in self.scene.items()
+        ):
+            super().keyPressEvent(event)
+            return
+
+        # Ctrl + L: toggle lock on all selected SymbolItems (Q5, Q14)
+        if event.key() == Qt.Key.Key_L and (event.modifiers() & Qt.KeyboardModifier.ControlModifier):
+            selected = [item for item in self.scene.selectedItems() if isinstance(item, SymbolItem)]
+            for item in selected:
+                item.toggle_lock()
+            event.accept()
+            return
+
+        # Ctrl + Z: Undo / Redo (Q6)
+        if event.key() == Qt.Key.Key_Z and (event.modifiers() & Qt.KeyboardModifier.ControlModifier):
+            if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                if self.canvas_parent and hasattr(self.canvas_parent, "undo_manager"):
+                    self.canvas_parent.undo_manager.redo()
+            else:
+                if self.canvas_parent and hasattr(self.canvas_parent, "undo_manager"):
+                    self.canvas_parent.undo_manager.undo()
+            event.accept()
+            return
+
+        # Arrow keys: Nudge selected unlocked symbols or section groups (Phase 2.1)
+        if event.key() in (Qt.Key.Key_Left, Qt.Key.Key_Right, Qt.Key.Key_Up, Qt.Key.Key_Down):
+            selected_symbols = [
+                item for item in self.scene.selectedItems()
+                if isinstance(item, SymbolItem) and not item.is_locked
+            ]
+            selected_groups = [
+                item for item in self.scene.selectedItems()
+                if isinstance(item, DiagramGroupItem)
+            ]
+
+            step = 10.0 if (event.modifiers() & Qt.KeyboardModifier.ShiftModifier) else 1.0
+            dx, dy = 0.0, 0.0
+            if event.key() == Qt.Key.Key_Left:
+                dx = -step
+            elif event.key() == Qt.Key.Key_Right:
+                dx = step
+            elif event.key() == Qt.Key.Key_Up:
+                dy = -step
+            elif event.key() == Qt.Key.Key_Down:
+                dy = step
+
+            if selected_symbols:
+                initial_positions = {item: item.pos() for item in selected_symbols}
+                moved_overrides = {}
+                moved_cids = set()
+
+                for item in selected_symbols:
+                    new_pos = item.pos() + QPointF(dx, dy)
+                    item.setPos(new_pos)
+                    moved_cids.add(item.cid)
+                    bx = getattr(item, "base_x", 0.0)
+                    by = getattr(item, "base_y", 0.0)
+                    moved_overrides[item.cid] = [bx + new_pos.x(), by - new_pos.y()]
+
+                self.update_connected_wires(moved_cids)
+                self.store_component_position_overrides(moved_overrides, initial_positions)
+                event.accept()
+                return
+
+            if selected_groups:
+                for item in selected_groups:
+                    init_pos = item.pos()
+                    new_pos = init_pos + QPointF(dx, dy)
+                    self.store_layout_override(item.name, new_pos, item.scale(), init_pos, item.scale())
+                event.accept()
+                return
+
+        # Disable Delete key for symbol items (Rule 8, Rule 9)
+        if event.key() == Qt.Key.Key_Delete:
+            event.ignore()
+            return
+
+        super().keyPressEvent(event)
+
+    def store_layout_override(self, group_name: str, pos: QPointF, scale: float, old_pos: QPointF = None, old_scale: float = None):
+        if not self.canvas_parent or not self.canvas_parent.current_parsed_data:
+            return
+
+        data = self.canvas_parent.current_parsed_data
+        overrides = data.setdefault("layout_overrides", {})
+
+        old_override = overrides.get(group_name)
+        if old_pos is not None and old_scale is not None:
+            px = old_pos.x() if hasattr(old_pos, "x") else old_pos[0]
+            py = old_pos.y() if hasattr(old_pos, "y") else old_pos[1]
+            prev_pos = [px, py]
+            prev_scale = old_scale
+        elif old_override:
+            prev_pos = [old_override["position"][0], old_override["position"][1]]
+            prev_scale = old_override.get("scale", 1.0)
+        else:
+            prev_pos = None
+            prev_scale = 1.0
+
+        nx = pos.x() if hasattr(pos, "x") else pos[0]
+        ny = pos.y() if hasattr(pos, "y") else pos[1]
+        new_pos = [nx, ny]
+        new_scale = scale
+
+        def apply_new():
             overrides[group_name] = {
-                "position": [pos.x(), pos.y()],
-                "scale": scale
+                "position": new_pos,
+                "scale": new_scale
             }
-            # Enable the reset button if it exists
-            if hasattr(self.canvas_parent, "parent_window") and self.canvas_parent.parent_window:
-                win = self.canvas_parent.parent_window
-                if hasattr(win, "sidebar") and win.sidebar:
-                    win.sidebar.reset_btn.setEnabled(True)
+            item = self.group_items.get(group_name)
+            if item:
+                item.setPos(new_pos[0], new_pos[1])
+                item.setScale(new_scale)
 
-    def store_text_override(self, label_id: str, new_text: str):
-        if self.canvas_parent and self.canvas_parent.current_parsed_data is not None:
-            data = self.canvas_parent.current_parsed_data
-            overrides = data.setdefault("text_overrides", {})
+        def apply_old():
+            if prev_pos is None:
+                overrides.pop(group_name, None)
+                item = self.group_items.get(group_name)
+                if item:
+                    item.setPos(0.0, 0.0)
+                    item.setScale(1.0)
+            else:
+                overrides[group_name] = {
+                    "position": prev_pos,
+                    "scale": prev_scale
+                }
+                item = self.group_items.get(group_name)
+                if item:
+                    item.setPos(prev_pos[0], prev_pos[1])
+                    item.setScale(prev_scale)
+
+        from ECD.undo_manager import DictStateCommand
+        cmd = DictStateCommand(f"Move/Resize Group '{group_name}'", apply_new, apply_old)
+        if hasattr(self.canvas_parent, "undo_manager"):
+            self.canvas_parent.undo_manager.push(cmd)
+
+        overrides[group_name] = {
+            "position": new_pos,
+            "scale": new_scale
+        }
+
+        item = self.group_items.get(group_name)
+        if item:
+            item.setPos(new_pos[0], new_pos[1])
+            item.setScale(new_scale)
+
+        # Enable the reset button if it exists
+        if hasattr(self.canvas_parent, "parent_window") and self.canvas_parent.parent_window:
+            win = self.canvas_parent.parent_window
+            if hasattr(win, "sidebar") and win.sidebar:
+                win.sidebar.reset_btn.setEnabled(True)
+
+    def store_text_override(self, label_id: str, new_text: str, old_text: str = None):
+        if not self.canvas_parent or self.canvas_parent.current_parsed_data is None:
+            return
+
+        data = self.canvas_parent.current_parsed_data
+        overrides = data.setdefault("text_overrides", {})
+
+        old_override_val = overrides.get(label_id)
+
+        # Find the text item displayed on canvas
+        text_item = None
+        if self.scene:
+            for item in self.scene.items():
+                if isinstance(item, EditableTextItem) and getattr(item, "label_id", None) == label_id:
+                    text_item = item
+                    break
+
+        prev_displayed_text = old_text if old_text is not None else (text_item.toPlainText() if text_item else "")
+
+        def apply_new():
             overrides[label_id] = new_text
-            # Enable the reset button if it exists
-            if hasattr(self.canvas_parent, "parent_window") and self.canvas_parent.parent_window:
-                win = self.canvas_parent.parent_window
-                if hasattr(win, "sidebar") and win.sidebar:
-                    win.sidebar.reset_btn.setEnabled(True)
+            if self.scene:
+                for item in self.scene.items():
+                    if isinstance(item, EditableTextItem) and getattr(item, "label_id", None) == label_id:
+                        item.setPlainText(new_text)
 
-    def fit_to_view(self):
-        rect = self.scene.sceneRect()
-        if rect.width() > 0 and rect.height() > 0 and self.width() > 0 and self.height() > 0:
-            self.fitInView(rect, Qt.AspectRatioMode.KeepAspectRatio)
-        
-    def load(self, byte_array: QByteArray) -> bool:
-        """Fallback method using standard single SVG load."""
-        self.scene.clear()
-        self.group_items.clear()
-        
-        renderer = QSvgRenderer(byte_array)
-        if not renderer.isValid():
-            return False
-            
-        self.fallback_renderer = renderer
-        svg_item = QGraphicsSvgItem()
-        svg_item.setSharedRenderer(renderer)
-        self.scene.addItem(svg_item)
-        self.scale_factor = 1.0
-        
-        # Fit to view initially
-        self.scene.setSceneRect(self.scene.itemsBoundingRect())
-        self.fitInView(self.scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
-        return True
+        def apply_old():
+            if old_override_val is not None:
+                overrides[label_id] = old_override_val
+            else:
+                overrides.pop(label_id, None)
+
+            if self.scene:
+                for item in self.scene.items():
+                    if isinstance(item, EditableTextItem) and getattr(item, "label_id", None) == label_id:
+                        item.setPlainText(prev_displayed_text)
+
+        from ECD.undo_manager import DictStateCommand
+        cmd = DictStateCommand(f"Edit Label '{label_id}'", apply_new, apply_old)
+        if hasattr(self.canvas_parent, "undo_manager"):
+            self.canvas_parent.undo_manager.push(cmd)
+
+        overrides[label_id] = new_text
+        if text_item:
+            text_item.setPlainText(new_text)
+
+        # Enable the reset button if it exists
+        if hasattr(self.canvas_parent, "parent_window") and self.canvas_parent.parent_window:
+            win = self.canvas_parent.parent_window
+            if hasattr(win, "sidebar") and win.sidebar:
+                win.sidebar.reset_btn.setEnabled(True)
+
+    def store_component_position_overrides(self, overrides: dict, initial_positions: dict):
+        if not self.canvas_parent or not self.canvas_parent.current_parsed_data:
+            return
+
+        data = self.canvas_parent.current_parsed_data
+        comp_overrides = data.setdefault("component_position_overrides", {})
+
+        old_states = {}
+        new_states = {}
+        old_pos_coords = {}
+
+        for cid, pos in overrides.items():
+            cid_str = str(cid)
+            old_pos = comp_overrides.get(cid_str, {}).get("position")
+            sym_item = self.symbol_items.get(cid_str)
+            bx = getattr(sym_item, "base_x", 0.0) if sym_item else 0.0
+            by = getattr(sym_item, "base_y", 0.0) if sym_item else 0.0
+
+            init_p = initial_positions.get(cid_str)
+            if not init_p:
+                for item, p_val in initial_positions.items():
+                    if getattr(item, "cid", None) == cid_str:
+                        init_p = p_val
+                        break
+            if init_p:
+                old_pos_coords[cid_str] = [bx + init_p.x(), by - init_p.y()]
+
+            old_states[cid_str] = old_pos
+            new_states[cid_str] = pos
+            comp_overrides[cid_str] = {"position": pos}
+            if sym_item:
+                sym_item.setPos(pos[0] - bx, -(pos[1] - by))
+
+        def apply_new():
+            for cid, p in new_states.items():
+                comp_overrides[cid] = {"position": p}
+                item = self.symbol_items.get(cid)
+                if item:
+                    bx = getattr(item, "base_x", 0.0)
+                    by = getattr(item, "base_y", 0.0)
+                    item.setPos(p[0] - bx, -(p[1] - by))
+            self.update_connected_wires(set(new_states.keys()))
+
+        def apply_old():
+            for cid, p in old_states.items():
+                item = self.symbol_items.get(cid)
+                if p is None:
+                    comp_overrides.pop(cid, None)
+                    if item:
+                        item.setPos(0.0, 0.0)
+                else:
+                    comp_overrides[cid] = {"position": p}
+                    if item:
+                        bx = getattr(item, "base_x", 0.0)
+                        by = getattr(item, "base_y", 0.0)
+                        item.setPos(p[0] - bx, -(p[1] - by))
+            self.update_connected_wires(set(old_states.keys()))
+
+        from ECD.undo_manager import DictStateCommand
+        cmd = DictStateCommand("Move Symbol(s)", apply_new, apply_old)
+        if hasattr(self.canvas_parent, "undo_manager"):
+            self.canvas_parent.undo_manager.push(cmd)
+
+        if hasattr(self.canvas_parent, "parent_window") and self.canvas_parent.parent_window:
+            win = self.canvas_parent.parent_window
+            if hasattr(win, "sidebar") and win.sidebar:
+                win.sidebar.reset_btn.setEnabled(True)
+
+    def update_connected_wires(self, moved_cids: set):
+        """Live-update only the wires connected to moved symbols during drag (Q12, Q21)."""
+        if not hasattr(self, "wire_items") or not self.wire_items:
+            return
+
+        try:
+            from ECD.pin_model import get_pin_position
+        except ImportError:
+            from pin_model import get_pin_position
+
+        for wire_info in self.wire_items:
+            src_cid = wire_info["src_cid"]
+            dst_cid = wire_info["dst_cid"]
+
+            if src_cid in moved_cids or dst_cid in moved_cids:
+                src_item = self.symbol_items.get(src_cid)
+                dst_item = self.symbol_items.get(dst_cid)
+
+                if src_item:
+                    src_pos = (src_item.base_x + src_item.pos().x(), src_item.base_y - src_item.pos().y())
+                else:
+                    src_pos = wire_info.get("src_default_pos", (0.0, 0.0))
+
+                if dst_item:
+                    dst_pos = (dst_item.base_x + dst_item.pos().x(), dst_item.base_y - dst_item.pos().y())
+                else:
+                    dst_pos = wire_info.get("dst_default_pos", (0.0, 0.0))
+
+                try:
+                    src_pin_pos = get_pin_position(src_cid, wire_info["src_pin"], src_pos, wire_info["phase_mode"])
+                except Exception:
+                    src_pin_pos = src_pos
+
+                try:
+                    dst_pin_pos = get_pin_position(dst_cid, wire_info["dst_pin"], dst_pos, wire_info["phase_mode"])
+                except Exception:
+                    dst_pin_pos = dst_pos
+
+                qt_src = (src_pin_pos[0], -src_pin_pos[1])
+                qt_dst = (dst_pin_pos[0], -dst_pin_pos[1])
+
+                pts = route_diagram_wire(src_cid, dst_cid, wire_info["wire_type"], qt_src, qt_dst)
+
+                path = QPainterPath()
+                if pts:
+                    path.moveTo(pts[0][0], pts[0][1])
+                    for p in pts[1:]:
+                        path.lineTo(p[0], p[1])
+                wire_info["item"].setPath(path)
 
     def load_document(self, doc, layout_overrides: dict) -> bool:
-        """Load the ezdxf document as 4 separate groups into the scene (Phase 1)."""
+        """Load ezdxf document as per-symbol objects and 3 documentation groups."""
         self.scene.clear()
         self.group_items.clear()
+        self.symbol_items.clear()
+        self.wire_items = []
         self.renderers = []  # Keep references to prevent premature garbage collection
         
         if not doc:
             return False
             
-        groups = ["main_diagram", "title_block", "legend", "load_schedule"]
-        
         try:
             from ezdxf.bbox import extents
         except ImportError:
@@ -378,24 +798,26 @@ class SvgPreviewWidget(QGraphicsView):
             
         def aci_to_qcolor(aci: int) -> QColor:
             mapping = {
-                1: QColor(255, 0, 0),      # Red
-                2: QColor(255, 255, 0),    # Yellow
-                3: QColor(0, 255, 0),      # Green
-                4: QColor(0, 255, 255),    # Cyan
-                5: QColor(0, 0, 255),      # Blue
+                1: QColor(215, 38, 56),    # Red / L1 (rich)
+                2: QColor(220, 170, 0),    # Yellow / L2 (warm golden)
+                3: QColor(0, 230, 100),    # Green / Neutral
+                4: QColor(0, 210, 255),    # Cyan
+                5: QColor(25, 90, 210),    # Darker Blue / Earth
                 6: QColor(255, 0, 255),    # Magenta
                 7: QColor(255, 255, 255),  # White
-                30: QColor(255, 127, 0),   # Orange / L3
+                30: QColor(220, 100, 0),   # Orange / L3 (rich)
                 250: QColor(128, 128, 128) # Grey
             }
             return mapping.get(aci, QColor(255, 255, 255))
             
         try:
-            from dxf_generator import get_group_graphics_and_text, render_entities_to_svg
+            from dxf_generator import get_group_graphics_and_text, get_per_symbol_graphics_and_text, render_entities_to_svg
         except ImportError:
-            from ECD.dxf_generator import get_group_graphics_and_text, render_entities_to_svg
+            from ECD.dxf_generator import get_group_graphics_and_text, get_per_symbol_graphics_and_text, render_entities_to_svg
             
-        for gname in groups:
+        # 1. Render Documentation Groups (Title Block, Legend, Load Schedule)
+        doc_groups = ["title_block", "legend", "load_schedule"]
+        for gname in doc_groups:
             graphics, text_ents = get_group_graphics_and_text(doc, gname)
             
             group_item = DiagramGroupItem(gname, self)
@@ -406,7 +828,6 @@ class SvgPreviewWidget(QGraphicsView):
             pos_override = override.get("position")
             scale_override = override.get("scale", 1.0)
             
-            # 1. Add graphics/backdrop (if any)
             if graphics:
                 try:
                     bb = extents(graphics)
@@ -420,7 +841,6 @@ class SvgPreviewWidget(QGraphicsView):
                         self.renderers.append(renderer)
                         svg_item.setSharedRenderer(renderer)
                         
-                        # Scale backdrop to match modelspace width and height
                         target_w = x_max - x_min
                         target_h = y_max - y_min
                         default_size = svg_item.boundingRect().size()
@@ -431,13 +851,11 @@ class SvgPreviewWidget(QGraphicsView):
                             transform.scale(scale_x, scale_y)
                             svg_item.setTransform(transform)
                         
-                        # Position backdrop
                         svg_item.setPos(x_min, -y_max)
                         group_item.addToGroup(svg_item)
                 except Exception as ge:
-                    print(f"Error rendering graphics for group {gname}: {ge}")
+                    print(f"Error rendering graphics for doc group {gname}: {ge}")
                     
-            # 2. Add text items
             for tent in text_ents:
                 align, p1, p2 = tent.get_placement()
                 pos = p1 if align == 0 or p2 is None else p2
@@ -493,19 +911,178 @@ class SvgPreviewWidget(QGraphicsView):
                 elif is_bottom:
                     adj_y -= (ascent + descent)
                 else:
-                    # Default baseline alignment (LEFT=1, CENTER=2, RIGHT=3)
                     adj_y -= ascent
                     
                 text_item.setPos(adj_x, adj_y)
                 group_item.addToGroup(text_item)
                 
-            # Apply layout overrides
             if pos_override:
                 group_item.setPos(pos_override[0], pos_override[1])
             if scale_override != 1.0:
                 group_item.prepareGeometryChange()
                 group_item.setScale(scale_override)
-                
+
+        # 2. Render Per-Symbol Items in Main Diagram
+        symbol_map, (static_graphics, static_texts) = get_per_symbol_graphics_and_text(doc)
+        comp_overrides = {}
+        box_positions = getattr(doc, "box_positions", {})
+        if self.canvas_parent and self.canvas_parent.current_parsed_data:
+            comp_overrides = self.canvas_parent.current_parsed_data.get("component_position_overrides", {})
+
+        for cid, (graphics, text_ents) in symbol_map.items():
+            sym_item = SymbolItem(cid, self)
+            self.scene.addItem(sym_item)
+            self.symbol_items[cid] = sym_item
+
+            init_base = box_positions.get(cid, (0.0, 0.0))
+            sym_item.base_x = float(init_base[0])
+            sym_item.base_y = float(init_base[1])
+
+            if graphics:
+                try:
+                    bb = extents(graphics)
+                    x_min, y_min = bb.extmin.x, bb.extmin.y
+                    x_max, y_max = bb.extmax.x, bb.extmax.y
+
+                    svg_str = render_entities_to_svg(doc, graphics)
+                    if svg_str:
+                        svg_item = QGraphicsSvgItem()
+                        renderer = QSvgRenderer(QByteArray(svg_str.encode('utf-8')))
+                        self.renderers.append(renderer)
+                        svg_item.setSharedRenderer(renderer)
+
+                        target_w = x_max - x_min
+                        target_h = y_max - y_min
+                        default_size = svg_item.boundingRect().size()
+                        if default_size.width() > 0 and default_size.height() > 0:
+                            scale_x = target_w / default_size.width()
+                            scale_y = target_h / default_size.height()
+                            transform = QTransform()
+                            transform.scale(scale_x, scale_y)
+                            svg_item.setTransform(transform)
+
+                        svg_item.setPos(x_min, -y_max)
+                        sym_item.addToGroup(svg_item)
+                except Exception as se:
+                    print(f"Error rendering symbol graphics for {cid}: {se}")
+
+            for tent in text_ents:
+                align, p1, p2 = tent.get_placement()
+                pos = p1 if align == 0 or p2 is None else p2
+                label_id = getattr(tent, "label_id", None)
+                if label_id:
+                    text_item = EditableTextItem(label_id, sym_item, self)
+                else:
+                    text_item = QGraphicsTextItem()
+                text_item.setPlainText(tent.dxf.text)
+                text_item.document().setDocumentMargin(0)
+                font = QFont("Arial")
+                font.setPointSizeF(tent.dxf.height)
+                text_item.setFont(font)
+                aci = tent.dxf.color or 7
+                text_item.setDefaultTextColor(aci_to_qcolor(aci))
+                self.scene.addItem(text_item)
+
+                fm = QFontMetricsF(font)
+                width = text_item.boundingRect().width()
+                align_val = align.value if hasattr(align, "value") else int(align)
+                adj_x = pos.x - (width / 2.0 if align_val in (2, 5, 8, 11, 14) else (width if align_val in (3, 9, 12, 15) else 0.0))
+                adj_y = -pos.y - fm.ascent()
+                text_item.setPos(adj_x, adj_y)
+                sym_item.addToGroup(text_item)
+
+            pos_ov = comp_overrides.get(cid, {}).get("position")
+            if pos_ov and len(pos_ov) >= 2:
+                delta_x = float(pos_ov[0]) - sym_item.base_x
+                delta_y = -(float(pos_ov[1]) - sym_item.base_y)
+                sym_item.setPos(delta_x, delta_y)
+
+        # 3. Render Dynamic Netlist Wires for Live Drag Routing
+        netlist = getattr(doc, "netlist", None)
+        phase_mode = getattr(doc, "phase_mode", "single")
+
+        if netlist and netlist.get("connections"):
+            try:
+                from ECD.pin_model import get_pin_position
+                from ECD.dxf_generator import route_wire_bend
+            except ImportError:
+                from pin_model import get_pin_position
+                from dxf_generator import route_wire_bend
+
+            for conn in netlist["connections"]:
+                src_cid = conn["src_component"]
+                dst_cid = conn["dst_component"]
+                src_pin = conn["src_pin"]
+                dst_pin = conn["dst_pin"]
+                wtype = conn["wire_type"]
+
+                src_item = self.symbol_items.get(src_cid)
+                dst_item = self.symbol_items.get(dst_cid)
+
+                if src_item:
+                    src_pos = (src_item.base_x + src_item.pos().x(), src_item.base_y - src_item.pos().y())
+                else:
+                    src_pos = box_positions.get(src_cid, (0.0, 0.0))
+
+                if dst_item:
+                    dst_pos = (dst_item.base_x + dst_item.pos().x(), dst_item.base_y - dst_item.pos().y())
+                else:
+                    dst_pos = box_positions.get(dst_cid, (0.0, 0.0))
+
+                try:
+                    src_pin_pos = get_pin_position(src_cid, src_pin, src_pos, phase_mode)
+                except Exception:
+                    src_pin_pos = conn.get("src_pos", src_pos)
+
+                try:
+                    dst_pin_pos = get_pin_position(dst_cid, dst_pin, dst_pos, phase_mode)
+                except Exception:
+                    dst_pin_pos = conn.get("dst_pos", dst_pos)
+
+                qt_src = (src_pin_pos[0], -src_pin_pos[1])
+                qt_dst = (dst_pin_pos[0], -dst_pin_pos[1])
+
+                pts = route_diagram_wire(src_cid, dst_cid, wtype, qt_src, qt_dst)
+
+                path = QPainterPath()
+                if pts:
+                    path.moveTo(pts[0][0], pts[0][1])
+                    for p in pts[1:]:
+                        path.lineTo(p[0], p[1])
+
+                path_item = QGraphicsPathItem(path)
+
+                if wtype in ("L", "L1"):
+                    pen = QPen(QColor(215, 38, 56), 2.0)      # Deep Rich Red (L1)
+                elif wtype == "L2":
+                    pen = QPen(QColor(220, 170, 0), 2.0)     # Warm Golden Yellow (L2)
+                elif wtype == "L3":
+                    pen = QPen(QColor(220, 100, 0), 2.0)     # Deep Rich Orange (L3)
+                elif wtype == "N":
+                    pen = QPen(QColor(0, 230, 100), 1.5, Qt.PenStyle.DashLine)  # Green (Neutral)
+                elif wtype == "E":
+                    pen = QPen(QColor(25, 90, 210), 1.5, Qt.PenStyle.DashDotLine) # Darker Blue (Earth)
+                else:
+                    pen = QPen(QColor(255, 255, 255), 1.5)
+
+                pen.setCosmetic(True)
+                path_item.setPen(pen)
+                path_item.setZValue(5.0)
+                path_item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
+                self.scene.addItem(path_item)
+
+                self.wire_items.append({
+                    "src_cid": src_cid,
+                    "dst_cid": dst_cid,
+                    "src_pin": src_pin,
+                    "dst_pin": dst_pin,
+                    "wire_type": wtype,
+                    "phase_mode": phase_mode,
+                    "item": path_item,
+                    "src_default_pos": box_positions.get(src_cid, (0.0, 0.0)),
+                    "dst_default_pos": box_positions.get(dst_cid, (0.0, 0.0))
+                })
+
         # Determine and set fixed sceneRect from PAGE_MARGIN layer bounds
         try:
             margin_entities = [e for e in doc.modelspace() if e.dxf.layer == "PAGE_MARGIN"]
@@ -566,9 +1143,9 @@ class SvgPreviewWidget(QGraphicsView):
         current_rel = self.get_relative_zoom()
         target_rel = current_rel * factor
 
-        if target_rel > 2.5:
-            factor = 2.5 / current_rel
-            target_rel = 2.5
+        if target_rel > 5.0:
+            factor = 5.0 / current_rel
+            target_rel = 5.0
         elif target_rel < 1.0:
             factor = 1.0 / current_rel
             target_rel = 1.0
@@ -942,6 +1519,8 @@ class DiagramCanvas(QWidget):
         super().__init__(parent)
         self.parent_window = parent
         self.generator = MermaidGenerator()
+        from ECD.undo_manager import UndoManager
+        self.undo_manager = UndoManager(self)
         self.current_parsed_data = None
         self.original_parsed_data = None
         self._current_mermaid_code = ""
@@ -1247,7 +1826,7 @@ class DiagramCanvas(QWidget):
         if self.current_doc:
             layout_overrides = {}
             if self.current_parsed_data:
-                layout_overrides = self.current_parsed_data.setdefault("layout_overrides", {})
+                layout_overrides = self.current_parsed_data.get("layout_overrides", {})
             self.svg_widget.load_document(self.current_doc, layout_overrides)
         else:
             self.svg_widget.load(QByteArray(self.current_svg.encode('utf-8')))
@@ -1257,6 +1836,7 @@ class DiagramCanvas(QWidget):
         import copy
         self.current_parsed_data  = copy.deepcopy(parsed_data)
         self.original_parsed_data = copy.deepcopy(parsed_data)
+        self.undo_manager.clear()
 
         mermaid_code = self.generator.generate_mermaid_code(parsed_data)
         self._current_mermaid_code = mermaid_code
@@ -1488,8 +2068,11 @@ class DiagramCanvas(QWidget):
         self.current_parsed_data = copy.deepcopy(self.original_parsed_data)
         self.current_parsed_data.pop("layout_overrides", None)
         self.current_parsed_data.pop("text_overrides", None)
+        self.current_parsed_data.pop("component_position_overrides", None)
         self.original_parsed_data.pop("layout_overrides", None)
         self.original_parsed_data.pop("text_overrides", None)
+        self.original_parsed_data.pop("component_position_overrides", None)
+        self.undo_manager.clear()
 
         # 3. Re-render DXF and redisplay
         self.current_doc = export_dxf(self.current_parsed_data, None)

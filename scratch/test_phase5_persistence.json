@@ -1,0 +1,58 @@
+{
+  "title": "Phase 5 Persistence & Regression Test Panel",
+  "voltage": "230V AC",
+  "components": [
+    [
+      "supply",
+      "Main Supply"
+    ],
+    [
+      "maincb",
+      "Main Breaker 100A"
+    ],
+    [
+      "rcd",
+      "RCD 30mA"
+    ],
+    [
+      "bus",
+      "Busbar"
+    ],
+    [
+      "outcb_1",
+      "OUTCB_1 16A"
+    ],
+    [
+      "load_1",
+      "Lighting Circuit 1"
+    ],
+    [
+      "nbar",
+      "Neutral Bar"
+    ],
+    [
+      "ebar",
+      "Earth Bar"
+    ]
+  ],
+  "component_position_overrides": {
+    "maincb": {
+      "position": [
+        15.0,
+        72.0
+      ]
+    }
+  },
+  "text_overrides": {
+    "maincb.label": "Edited Main Breaker 125A"
+  },
+  "layout_overrides": {
+    "legend": {
+      "position": [
+        5.0,
+        5.0
+      ],
+      "scale": 1.1
+    }
+  }
+}

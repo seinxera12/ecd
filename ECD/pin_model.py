@@ -431,6 +431,15 @@ def compute_component_positions(parsed_data: dict, phase_mode: str = None, start
             positions[cid_lower] = (custom_x, start_y - unplaced_count * H_STEP)
             unplaced_count += 1
             
+    # Apply manual component_position_overrides if present (manual overrides take precedence)
+    comp_overrides = parsed_data.get("component_position_overrides", {})
+    if comp_overrides:
+        for cid, ov in comp_overrides.items():
+            if isinstance(ov, dict) and "position" in ov:
+                pos = ov["position"]
+                if isinstance(pos, (list, tuple)) and len(pos) >= 2:
+                    positions[str(cid).lower()] = (float(pos[0]), float(pos[1]))
+
     return positions
 
 
