@@ -18,3 +18,5 @@ renders/
 .env
 exports/
 assets/
+*.zip
+*.spec

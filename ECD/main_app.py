@@ -71,8 +71,9 @@ class MainWindow(QMainWindow):
         edit_m = mb.addMenu("&Edit")
         for label, shortcut, slot in [
             ("&Reset Diagram",    "Ctrl+R", self.reset_diagram),
+            ("Toggle Symbol &Lock","Ctrl+L", self.toggle_symbol_lock),
             ("&Copy Mermaid Code","Ctrl+M", self.copy_mermaid),
-            ("C&lear All",        "Ctrl+L", self.clear_all),
+            ("C&lear All",        "Ctrl+Shift+C", self.clear_all),
         ]:
             a = QAction(label, self); a.setShortcut(shortcut); a.triggered.connect(slot); edit_m.addAction(a)
 
@@ -91,7 +92,14 @@ class MainWindow(QMainWindow):
         view_m.addAction(fs)
 
         help_m = mb.addMenu("&Help")
-        ab = QAction("&About", self); ab.triggered.connect(self.show_about); help_m.addAction(ab)
+        instr_act = QAction("&Instructions / User Guide", self)
+        instr_act.setShortcut("F1")
+        instr_act.triggered.connect(self.show_instructions)
+        help_m.addAction(instr_act)
+        help_m.addSeparator()
+        ab = QAction("&About", self)
+        ab.triggered.connect(self.show_about)
+        help_m.addAction(ab)
 
     def _build_ui(self):
         central = QWidget()
@@ -194,11 +202,10 @@ class MainWindow(QMainWindow):
                 raise ValueError("No generated DXF document found in memory.")
             render_doc_to_png(doc, path)
             msg = f"✓ PNG saved to {path}"
-            self.status.showMessage(msg, 4000)
-            QMessageBox.information(self, "Exported", msg)
+            self.status.showMessage(msg, 5000)
         except Exception as e:
             msg = f"PNG export failed: {e}"
-            self.status.showMessage(msg, 4000)
+            self.status.showMessage(msg, 5000)
             QMessageBox.critical(self, "Export Error", msg)
 
     def export_as_svg(self):
@@ -213,11 +220,10 @@ class MainWindow(QMainWindow):
             with open(path, 'w', encoding='utf-8') as f:
                 f.write(svg_str)
             msg = f"✓ SVG saved to {path}"
-            self.status.showMessage(msg, 4000)
-            QMessageBox.information(self, "Exported", msg)
+            self.status.showMessage(msg, 5000)
         except Exception as e:
             msg = f"SVG export failed: {e}"
-            self.status.showMessage(msg, 4000)
+            self.status.showMessage(msg, 5000)
             QMessageBox.critical(self, "Export Error", msg)
 
     def export_as_pdf(self):
@@ -231,11 +237,10 @@ class MainWindow(QMainWindow):
                 raise ValueError("No generated DXF document found in memory.")
             render_doc_to_pdf(doc, path)
             msg = f"✓ PDF saved to {path}"
-            self.status.showMessage(msg, 4000)
-            QMessageBox.information(self, "Exported", msg)
+            self.status.showMessage(msg, 5000)
         except Exception as e:
             msg = f"PDF export failed: {e}"
-            self.status.showMessage(msg, 4000)
+            self.status.showMessage(msg, 5000)
             QMessageBox.critical(self, "Export Error", msg)
         
 
@@ -254,14 +259,17 @@ class MainWindow(QMainWindow):
             with open(path, 'w', encoding='utf-8') as f:
                 f.write(code)
             msg = f"✓ Mermaid code saved to {path}"
-            self.status.showMessage(msg, 4000)
-            QMessageBox.information(self, "Downloaded", msg)
+            self.status.showMessage(msg, 5000)
         except Exception as e:
             QMessageBox.critical(self, "Save Error", str(e))
 
     # ── Edit / View actions ───────────────────────────────────────────────────
 
     def reset_diagram(self):  self.sidebar._reset()
+    def toggle_symbol_lock(self):
+        if hasattr(self.canvas, "toggle_symbol_lock"):
+            self.canvas.toggle_symbol_lock()
+
     def zoom_in(self):
         self.canvas.zoom_in()
 
@@ -301,20 +309,95 @@ class MainWindow(QMainWindow):
                                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes:
             self.new_diagram()
 
+    def show_instructions(self):
+        """Display User Guide and Feature Manual in a simple minimal white-text style."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("User Guide & Feature Manual")
+        dialog.resize(700, 580)
+        dialog.setStyleSheet("QDialog { background-color: #1a202c; color: #ffffff; }")
+
+        layout = QVBoxLayout(dialog)
+
+        text_browser = QTextBrowser()
+        text_browser.setOpenExternalLinks(True)
+        text_browser.setStyleSheet("QTextBrowser { background-color: #1a202c; color: #ffffff; border: none; }")
+        text_browser.setHtml("""
+        <style>
+            body { font-family: 'Segoe UI', Arial, sans-serif; color: #ffffff; line-height: 1.6; font-size: 13px; background-color: #1a202c; }
+            h2 { color: #ffffff; border-bottom: 1px solid #4a5568; padding-bottom: 6px; margin-top: 10px; font-weight: 700; }
+            h3 { color: #ffffff; margin-top: 16px; margin-bottom: 6px; font-weight: 600; }
+            table { width: 100%; border-collapse: collapse; margin-top: 8px; margin-bottom: 12px; }
+            th { color: #ffffff; text-align: left; padding: 6px 8px; border-bottom: 2px solid #4a5568; font-weight: 700; }
+            td { color: #ffffff; padding: 6px 8px; border-bottom: 1px solid #4a5568; }
+            ul { color: #ffffff; margin-top: 4px; padding-left: 20px; }
+            li { color: #ffffff; margin-bottom: 4px; }
+            p { color: #ffffff; margin-top: 4px; margin-bottom: 8px; }
+            .kbd { font-family: monospace; font-weight: bold; color: #ffffff; }
+            .desc { color: #ffffff; margin-bottom: 12px; }
+        </style>
+
+        <h2>Electrical Diagram Generator — Feature & Shortcut Guide</h2>
+
+        <p class="desc"><b>Live Interactive Editor:</b> Drag, rearrange, lock, and edit text labels directly on the canvas. Wire connections update automatically in real time.</p>
+
+        <h3>Keyboard & Mouse Controls</h3>
+        <table>
+            <tr><th>Action</th><th>Shortcut / Gesture</th><th>Description</th></tr>
+            <tr><td><b>Move Symbol(s)</b></td><td><span class="kbd">Left Click + Drag</span></td><td>Click and drag any symbol or selected group of symbols to move them.</td></tr>
+            <tr><td><b>Marquee Select</b></td><td><span class="kbd">Left Click + Drag (Empty Space)</span></td><td>Draw a selection box around multiple symbols to move or lock them together.</td></tr>
+            <tr><td><b>Nudge Selection (1px)</b></td><td><span class="kbd">Left / Right / Up / Down</span></td><td>Nudge selected unlocked symbols or documentation sections by 1 pixel.</td></tr>
+            <tr><td><b>Coarse Nudge (10px)</b></td><td><span class="kbd">Shift + Arrow Keys</span></td><td>Nudge selected unlocked symbols or sections by 10 pixels.</td></tr>
+            <tr><td><b>Undo Action</b></td><td><span class="kbd">Ctrl + Z</span></td><td>Undo symbol moves, text edits, or layout position changes.</td></tr>
+            <tr><td><b>Redo Action</b></td><td><span class="kbd">Ctrl + Shift + Z</span></td><td>Redo previously undone actions.</td></tr>
+            <tr><td><b>Toggle Lock</b></td><td><span class="kbd">Ctrl + L</span></td><td>Lock selected symbols in place (locked symbols show an indicator dot and cannot be moved).</td></tr>
+            <tr><td><b>Clear All</b></td><td><span class="kbd">Ctrl + Shift + C</span></td><td>Clear prompt input and active diagram canvas.</td></tr>
+            <tr><td><b>Edit Text Label</b></td><td><span class="kbd">Double-Click Text</span></td><td>Edit any symbol or section text label in place. Press Enter to commit.</td></tr>
+            <tr><td><b>Zoom View</b></td><td><span class="kbd">Mouse Wheel / Ctrl + / -</span></td><td>Zoom in and out centered under the cursor.</td></tr>
+            <tr><td><b>Pan Canvas</b></td><td><span class="kbd">Right-Click / Middle-Click + Drag</span></td><td>Pan smoothly across the diagram canvas.</td></tr>
+            <tr><td><b>Reset Zoom</b></td><td><span class="kbd">Ctrl + 0</span></td><td>Reset zoom scale back to 100% baseline.</td></tr>
+            <tr><td><b>Toggle Fullscreen</b></td><td><span class="kbd">F11</span></td><td>Expand application to full screen.</td></tr>
+        </table>
+
+        <h3>Key Features & Capabilities</h3>
+        <ul>
+            <li><b>Reset Layout:</b> Restores all symbols to their default auto-aligned grid positions.</li>
+            <li><b>Electrical Rule Check (ERC):</b> Three-tier deterministic rule engine (Presence, Consistency, Topology) validates diagram safety.</li>
+            <li><b>Multi-Format Exporting:</b>
+                <ul>
+                    <li><b>DXF:</b> CAD drawing format compatible with AutoCAD and LibreCAD.</li>
+                    <li><b>SVG:</b> Scalable Vector Graphics for web and vector embedding.</li>
+                    <li><b>PNG:</b> High-resolution raster images (full sheet or cropped diagram).</li>
+                    <li><b>PDF:</b> Standard A4 landscape printable document.</li>
+                    <li><b>KiCad Schematic:</b> Export as native KiCad 10 schematic (.kicad_sch).</li>
+                    <li><b>Mermaid.js:</b> Save text representation (.mmd).</li>
+                </ul>
+            </li>
+            <li><b>Save / Load Project:</b> Save complete project state (.json) preserving custom layout overrides and text edits.</li>
+        </ul>
+        """)
+
+        layout.addWidget(text_browser)
+
+        btn_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        btn_box.rejected.connect(dialog.reject)
+        layout.addWidget(btn_box)
+
+        dialog.exec()
+
     def show_about(self):
-        QMessageBox.about(self, "About",
-            "<h2>Electrical Distribution Diagram Generator</h2>"
-            "<p>Version 3.0</p>"
-            "<p>Generate electrical distribution diagrams from natural language.</p>"
-            "<p><b>Export formats:</b></p>"
+        QMessageBox.about(self, "About Electrical Diagram Generator",
+            "<h2>⚡ Electrical Diagram Generator v3.0</h2>"
+            "<p><b>AI-Powered Electrical CAD & Live Schematic Editor</b></p>"
+            "<p>Generate, edit, validate, and export professional single-line and three-phase electrical distribution diagrams from natural language prompts.</p>"
+            "<hr>"
+            "<p><b>Key Capabilities:</b></p>"
             "<ul>"
-            "<li>PNG — full page or diagram-only</li>"
-            "<li>SVG — scalable vector graphic (diagram only)</li>"
-            "<li>PDF — A4 landscape via Qt print engine</li>"
-            "<li>Mermaid code — .mmd text file</li>"
+            "<li><b>Interactive Canvas:</b> Move, lock, nudge, and edit symbol labels in real-time.</li>"
+            "<li><b>Canonical Wire Router:</b> Automatic Manhattan right-angle routing, busbars, and daisy-chaining.</li>"
+            "<li><b>Deterministic ERC Engine:</b> 3-tier validation (Presence, Consistency, Topology) for safe wiring.</li>"
+            "<li><b>Universal CAD Exporter:</b> DXF, SVG, PNG, PDF, KiCad 10 (.kicad_sch), and Mermaid (.mmd).</li>"
             "</ul>"
-            "<p><b>Drag</b> participant boxes to reposition.<br>"
-            "<p>Built with PySide6 · Mermaid.js</p>")
+            "<p><small>Built with Python, PySide6, and ezdxf.</small></p>")
 
     def export_as_kicad(self):
         """Export current diagram as a KiCad 6+ schematic (.kicad_sch)."""
@@ -332,11 +415,10 @@ class MainWindow(QMainWindow):
         try:
             export_kicad_schematic(self.canvas.current_parsed_data, path)
             msg = f"✓ KiCad schematic saved to {path}"
-            self.status.showMessage(msg, 4000)
-            QMessageBox.information(self, "Exported", msg)
+            self.status.showMessage(msg, 5000)
         except Exception as e:
             msg = f"KiCad export failed: {e}"
-            self.status.showMessage(msg, 4000)
+            self.status.showMessage(msg, 5000)
             QMessageBox.critical(self, "Export Error", msg)
 
     def export_as_dxf(self):
@@ -358,11 +440,10 @@ class MainWindow(QMainWindow):
                 raise ValueError("No generated DXF document found in memory.")
             doc.saveas(path)
             msg = f"✓ DXF file saved to {path}"
-            self.status.showMessage(msg, 4000)
-            QMessageBox.information(self, "Exported", msg)
+            self.status.showMessage(msg, 5000)
         except Exception as e:
             msg = f"DXF export failed: {e}"
-            self.status.showMessage(msg, 4000)
+            self.status.showMessage(msg, 5000)
             QMessageBox.critical(self, "Export Error", msg)
 
 

@@ -38,6 +38,38 @@ hiddenimports = [
     'PIL',
     'PIL.Image',
     'requests',
+    # Top-level modules & shims
+    'ECD',
+    'ECD.diagram_canvas',
+    'ECD.dxf_generator',
+    'ECD.pin_model',
+    'ECD.erc',
+    'ECD.symbols',
+    'ECD.Kicad_exporter',
+    'ECD.undo_manager',
+    'ECD.sidebar',
+    'ECD.ValidationWorker',
+    'ECD.constants',
+    # Canvas subpackage
+    'ECD.canvas',
+    'ECD.canvas.diagram_canvas',
+    'ECD.canvas.symbol_item',
+    'ECD.canvas.text_item',
+    'ECD.canvas.selection_manager',
+    'ECD.canvas.commands',
+    'ECD.canvas.undo_manager',
+    # Electrical subpackage
+    'ECD.electrical',
+    'ECD.electrical.pin_model',
+    'ECD.electrical.erc',
+    'ECD.electrical.wire_router',
+    # CAD subpackage
+    'ECD.cad',
+    'ECD.cad.dxf_generator',
+    'ECD.cad.renderers',
+    'ECD.cad.layout_sections',
+    'ECD.cad.symbols',
+    'ECD.cad.Kicad_exporter',
 ]
 
 a = Analysis(
