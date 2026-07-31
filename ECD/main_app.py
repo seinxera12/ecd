@@ -91,6 +91,12 @@ class MainWindow(QMainWindow):
         fs.triggered.connect(self.toggle_fullscreen)
         view_m.addAction(fs)
 
+        settings_m = mb.addMenu("&Settings")
+        app_settings_action = QAction("Application &Settings...", self)
+        app_settings_action.setShortcut("Ctrl+,")
+        app_settings_action.triggered.connect(self.open_settings_page)
+        settings_m.addAction(app_settings_action)
+
         help_m = mb.addMenu("&Help")
         instr_act = QAction("&Instructions / User Guide", self)
         instr_act.setShortcut("F1")
@@ -309,38 +315,109 @@ class MainWindow(QMainWindow):
                                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes:
             self.new_diagram()
 
+    def open_settings_page(self):
+        """Open the Application Settings dialog."""
+        try:
+            from ECD.settings_page import SettingsPage
+            from ECD.config_manager import get_config
+        except ImportError:
+            from settings_page import SettingsPage
+            from config_manager import get_config
+
+        dialog = SettingsPage(config_manager=get_config(), parent=self)
+        dialog.exec()
+
     def show_instructions(self):
-        """Display User Guide and Feature Manual in a simple minimal white-text style."""
+        """Display User Guide and Feature Manual in the unified Dark Slate card container theme."""
         dialog = QDialog(self)
         dialog.setWindowTitle("User Guide & Feature Manual")
-        dialog.resize(700, 580)
-        dialog.setStyleSheet("QDialog { background-color: #1a202c; color: #ffffff; }")
+        dialog.setFixedWidth(720)
+        dialog.setFixedHeight(620)
+        dialog.setStyleSheet("""
+            QDialog {
+                background-color: #1a202c;
+                color: #ffffff;
+                font-family: 'Segoe UI', Arial, sans-serif;
+            }
+            QLabel {
+                color: #ffffff;
+            }
+            QPushButton {
+                border-radius: 6px;
+                padding: 7px 16px;
+                font-weight: bold;
+                font-size: 12px;
+                background-color: #3182ce;
+                color: #ffffff;
+                border: none;
+            }
+            QPushButton:hover {
+                background-color: #2b6cb0;
+            }
+        """)
 
         layout = QVBoxLayout(dialog)
+        layout.setSpacing(14)
+        layout.setContentsMargins(20, 20, 20, 20)
+
+        header_lbl = QLabel("User Guide & Feature Manual")
+        header_lbl.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
+        header_lbl.setStyleSheet("color: #ffffff; margin-bottom: 0px;")
+        layout.addWidget(header_lbl)
+
+        sub_lbl = QLabel("Complete keyboard shortcuts, canvas controls, and export capabilities.")
+        sub_lbl.setFont(QFont("Segoe UI", 9))
+        sub_lbl.setStyleSheet("color: #a0aec0; margin-bottom: 2px;")
+        layout.addWidget(sub_lbl)
+
+        card_box = QFrame()
+        card_box.setStyleSheet("""
+            QFrame {
+                background-color: #2d3748;
+                border: 1px solid #4a5568;
+                border-radius: 10px;
+            }
+        """)
+        card_lay = QVBoxLayout(card_box)
+        card_lay.setContentsMargins(16, 14, 16, 14)
 
         text_browser = QTextBrowser()
         text_browser.setOpenExternalLinks(True)
-        text_browser.setStyleSheet("QTextBrowser { background-color: #1a202c; color: #ffffff; border: none; }")
+        text_browser.setStyleSheet("""
+            QTextBrowser {
+                background-color: transparent;
+                color: #ffffff;
+                border: none;
+            }
+            QScrollBar:vertical {
+                background: #1a202c;
+                width: 8px;
+                border-radius: 4px;
+            }
+            QScrollBar::handle:vertical {
+                background: #4a5568;
+                border-radius: 4px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background: #718096;
+            }
+        """)
         text_browser.setHtml("""
         <style>
-            body { font-family: 'Segoe UI', Arial, sans-serif; color: #ffffff; line-height: 1.6; font-size: 13px; background-color: #1a202c; }
-            h2 { color: #ffffff; border-bottom: 1px solid #4a5568; padding-bottom: 6px; margin-top: 10px; font-weight: 700; }
-            h3 { color: #ffffff; margin-top: 16px; margin-bottom: 6px; font-weight: 600; }
-            table { width: 100%; border-collapse: collapse; margin-top: 8px; margin-bottom: 12px; }
-            th { color: #ffffff; text-align: left; padding: 6px 8px; border-bottom: 2px solid #4a5568; font-weight: 700; }
-            td { color: #ffffff; padding: 6px 8px; border-bottom: 1px solid #4a5568; }
-            ul { color: #ffffff; margin-top: 4px; padding-left: 20px; }
-            li { color: #ffffff; margin-bottom: 4px; }
-            p { color: #ffffff; margin-top: 4px; margin-bottom: 8px; }
-            .kbd { font-family: monospace; font-weight: bold; color: #ffffff; }
-            .desc { color: #ffffff; margin-bottom: 12px; }
+            body { font-family: 'Segoe UI', Arial, sans-serif; color: #e2e8f0; line-height: 1.6; font-size: 13px; }
+            h2 { color: #63b3ed; border-bottom: 1px solid #4a5568; padding-bottom: 6px; margin-top: 6px; font-size: 15px; font-weight: 700; }
+            h3 { color: #63b3ed; margin-top: 14px; margin-bottom: 6px; font-size: 13px; font-weight: 600; }
+            table { width: 100%; border-collapse: collapse; margin-top: 6px; margin-bottom: 12px; }
+            th { color: #ffffff; text-align: left; padding: 6px 8px; border-bottom: 2px solid #4a5568; background-color: #1a202c; font-weight: 700; }
+            td { color: #e2e8f0; padding: 6px 8px; border-bottom: 1px solid #4a5568; }
+            ul { color: #e2e8f0; margin-top: 4px; padding-left: 20px; }
+            li { color: #e2e8f0; margin-bottom: 4px; }
+            p { color: #e2e8f0; margin-top: 4px; margin-bottom: 8px; }
+            .kbd { font-family: 'Consolas', monospace; font-weight: bold; color: #ffffff; background-color: #1a202c; padding: 2px 6px; border-radius: 4px; border: 1px solid #4a5568; }
+            .desc { color: #a0aec0; margin-bottom: 12px; }
         </style>
 
-        <h2>Electrical Diagram Generator — Feature & Shortcut Guide</h2>
-
-        <p class="desc"><b>Live Interactive Editor:</b> Drag, rearrange, lock, and edit text labels directly on the canvas. Wire connections update automatically in real time.</p>
-
-        <h3>Keyboard & Mouse Controls</h3>
+        <h2>Keyboard & Mouse Controls</h2>
         <table>
             <tr><th>Action</th><th>Shortcut / Gesture</th><th>Description</th></tr>
             <tr><td><b>Move Symbol(s)</b></td><td><span class="kbd">Left Click + Drag</span></td><td>Click and drag any symbol or selected group of symbols to move them.</td></tr>
@@ -358,7 +435,7 @@ class MainWindow(QMainWindow):
             <tr><td><b>Toggle Fullscreen</b></td><td><span class="kbd">F11</span></td><td>Expand application to full screen.</td></tr>
         </table>
 
-        <h3>Key Features & Capabilities</h3>
+        <h2>Key Features & Capabilities</h2>
         <ul>
             <li><b>Reset Layout:</b> Restores all symbols to their default auto-aligned grid positions.</li>
             <li><b>Electrical Rule Check (ERC):</b> Three-tier deterministic rule engine (Presence, Consistency, Topology) validates diagram safety.</li>
@@ -375,29 +452,117 @@ class MainWindow(QMainWindow):
             <li><b>Save / Load Project:</b> Save complete project state (.json) preserving custom layout overrides and text edits.</li>
         </ul>
         """)
+        card_lay.addWidget(text_browser)
+        layout.addWidget(card_box)
 
-        layout.addWidget(text_browser)
-
-        btn_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
-        btn_box.rejected.connect(dialog.reject)
-        layout.addWidget(btn_box)
+        btn_bar = QHBoxLayout()
+        btn_bar.addStretch()
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(dialog.accept)
+        btn_bar.addWidget(close_btn)
+        layout.addLayout(btn_bar)
 
         dialog.exec()
 
     def show_about(self):
-        QMessageBox.about(self, "About Electrical Diagram Generator",
-            "<h2>⚡ Electrical Diagram Generator v3.0</h2>"
-            "<p><b>AI-Powered Electrical CAD & Live Schematic Editor</b></p>"
-            "<p>Generate, edit, validate, and export professional single-line and three-phase electrical distribution diagrams from natural language prompts.</p>"
-            "<hr>"
-            "<p><b>Key Capabilities:</b></p>"
-            "<ul>"
-            "<li><b>Interactive Canvas:</b> Move, lock, nudge, and edit symbol labels in real-time.</li>"
-            "<li><b>Canonical Wire Router:</b> Automatic Manhattan right-angle routing, busbars, and daisy-chaining.</li>"
-            "<li><b>Deterministic ERC Engine:</b> 3-tier validation (Presence, Consistency, Topology) for safe wiring.</li>"
-            "<li><b>Universal CAD Exporter:</b> DXF, SVG, PNG, PDF, KiCad 10 (.kicad_sch), and Mermaid (.mmd).</li>"
-            "</ul>"
-            "<p><small>Built with Python, PySide6, and ezdxf.</small></p>")
+        """Display About information in the unified Dark Slate card container theme."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("About Electrical Diagram Generator")
+        dialog.setFixedWidth(540)
+        dialog.setStyleSheet("""
+            QDialog {
+                background-color: #1a202c;
+                color: #ffffff;
+                font-family: 'Segoe UI', Arial, sans-serif;
+            }
+            QLabel {
+                color: #ffffff;
+            }
+            QPushButton {
+                border-radius: 6px;
+                padding: 7px 16px;
+                font-weight: bold;
+                font-size: 12px;
+                background-color: #3182ce;
+                color: #ffffff;
+                border: none;
+            }
+            QPushButton:hover {
+                background-color: #2b6cb0;
+            }
+        """)
+
+        layout = QVBoxLayout(dialog)
+        layout.setSpacing(14)
+        layout.setContentsMargins(20, 20, 20, 20)
+
+        header_lbl = QLabel("About Electrical Diagram Generator")
+        header_lbl.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
+        header_lbl.setStyleSheet("color: #ffffff; margin-bottom: 0px;")
+        layout.addWidget(header_lbl)
+
+        sub_lbl = QLabel("AI-Powered Electrical CAD & Live Schematic Editor")
+        sub_lbl.setFont(QFont("Segoe UI", 9))
+        sub_lbl.setStyleSheet("color: #a0aec0; margin-bottom: 2px;")
+        layout.addWidget(sub_lbl)
+
+        card_box = QFrame()
+        card_box.setStyleSheet("""
+            QFrame {
+                background-color: #2d3748;
+                border: 1px solid #4a5568;
+                border-radius: 10px;
+            }
+        """)
+        card_lay = QVBoxLayout(card_box)
+        card_lay.setSpacing(12)
+        card_lay.setContentsMargins(18, 16, 18, 16)
+
+        card_title = QLabel("⚡ Electrical Diagram Generator v3.0")
+        card_title.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
+        card_title.setStyleSheet("color: #63b3ed; border: none;")
+        card_lay.addWidget(card_title)
+
+        desc_lbl = QLabel("Generate, edit, validate, and export professional single-line and three-phase electrical distribution diagrams from natural language prompts.")
+        desc_lbl.setWordWrap(True)
+        desc_lbl.setStyleSheet("border: none; color: #e2e8f0; font-size: 12px; line-height: 1.5;")
+        card_lay.addWidget(desc_lbl)
+
+        line = QFrame()
+        line.setFrameShape(QFrame.Shape.HLine)
+        line.setStyleSheet("background-color: #4a5568; border: none; max-height: 1px;")
+        card_lay.addWidget(line)
+
+        caps_title = QLabel("Key Capabilities:")
+        caps_title.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+        caps_title.setStyleSheet("color: #ffffff; border: none;")
+        card_lay.addWidget(caps_title)
+
+        caps_list = QLabel(
+            "• <b>Interactive Canvas:</b> Move, lock, nudge, and edit symbol labels in real time.<br>"
+            "• <b>Canonical Wire Router:</b> Automatic Manhattan right-angle routing & busbars.<br>"
+            "• <b>Deterministic ERC Engine:</b> 3-tier validation (Presence, Consistency, Topology).<br>"
+            "• <b>Universal CAD Exporter:</b> DXF, SVG, PNG, PDF, KiCad 10 (.kicad_sch), and Mermaid (.mmd)."
+        )
+        caps_list.setWordWrap(True)
+        caps_list.setStyleSheet("border: none; color: #cbd5e0; font-size: 12px; line-height: 1.6;")
+        card_lay.addWidget(caps_list)
+
+        tech_lbl = QLabel("Built with Python, PySide6, and ezdxf.")
+        tech_lbl.setFont(QFont("Segoe UI", 8))
+        tech_lbl.setStyleSheet("border: none; color: #a0aec0; margin-top: 4px;")
+        card_lay.addWidget(tech_lbl)
+
+        layout.addWidget(card_box)
+
+        btn_bar = QHBoxLayout()
+        btn_bar.addStretch()
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(dialog.accept)
+        btn_bar.addWidget(close_btn)
+        layout.addLayout(btn_bar)
+
+        dialog.exec()
 
     def export_as_kicad(self):
         """Export current diagram as a KiCad 6+ schematic (.kicad_sch)."""

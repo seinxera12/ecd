@@ -321,6 +321,8 @@ def ensure_connections(parsed_data: dict) -> list[tuple[str, str]]:
             bt = get_base_type(cid_lower)
             if "spare" in cid_lower or "unwired" in cid_lower or "orphan" in cid_lower:
                 continue
+            if bt == "supply" and cid_lower != "supply":
+                continue # Secondary power supplies feed in parallel into ATS or maincb, not in series
             if cid_lower in ["supply", "maincb", "rcd", "rcbo", "bus"] or (
                 cid_lower not in known_types 
                 and bt != "outcb" 
@@ -390,8 +392,17 @@ def ensure_connections(parsed_data: dict) -> list[tuple[str, str]]:
             if not any(src.lower() == outcb_id.lower() and (dst.lower() == "loads" or get_base_type(dst) == "loads") for src, dst in connections):
                 add_edge(outcb_id, "loads")
                 
-    # 2. supply -> maincb
-    if "supply" in component_ids and "maincb" in component_ids:
+    # 2. ATS transfer switch & supply -> maincb
+    ats_id = next((c for c in component_ids if get_base_type(c) == "ats" or "ats" in c.lower()), None)
+    if ats_id:
+        for s_id in [c for c in component_ids if get_base_type(c) == "supply"]:
+            if not any(src.lower() == s_id.lower() and dst.lower() == ats_id.lower() for src, dst in connections):
+                add_edge(s_id, ats_id)
+        target_after_ats = "maincb" if "maincb" in component_ids else ("rcd" if "rcd" in component_ids else "bus")
+        if target_after_ats in component_ids:
+            if not any(src.lower() == ats_id.lower() and dst.lower() == target_after_ats for src, dst in connections):
+                add_edge(ats_id, target_after_ats)
+    elif "supply" in component_ids and "maincb" in component_ids:
         if not any(src.lower() == "supply" and dst.lower() == "maincb" for src, dst in connections):
             add_edge("supply", "maincb")
             
@@ -1296,6 +1307,10 @@ def export_dxf(parsed_data: dict, output_path: str = None) -> Optional[ezdxf.doc
     has_junctions = ("bus" in comp_map and len(outcb_ids) > 0) or (show_neutral and "nbar" in comp_map) or (show_earth and "ebar" in comp_map)
     if has_junctions:
         legend_symbols.append(("SYM_JUNCTION", "接続点" if language == "ja" else "Junction Dot"))
+
+    has_custom = any(pin_model.get_base_type(cid) not in {"supply", "maincb", "rcd", "rcbo", "bus", "nbar", "ebar", "loads", "outcb"} for cid in comp_map)
+    if has_custom:
+        legend_symbols.append(("SYM_GENERIC", "カスタム機器" if language == "ja" else "Custom Device"))
 
 
 

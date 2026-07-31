@@ -256,7 +256,7 @@ PIN_WIRING_RULES: dict[tuple[str, str], list[tuple[str, str]]] = {
 def get_base_type(component_id: str) -> str:
     """Normalize dynamic IDs (e.g. 'outcb_1' -> 'outcb', 'load_1' -> 'loads')."""
     cid = component_id.lower()
-    if re.match(r'^(supply|grid|mains|source)(?:_|\d|\b|$)', cid):
+    if re.match(r'^(supply|grid|mains|source|generator|gen|solar|pv)(?:_|\d|\b|$)', cid):
         return "supply"
     if re.match(r'^(outcb|outgoingcb|outcr|outgoingcr|mcb|cb)(?:_|\d|\b|$)', cid):
         return "outcb"
@@ -354,8 +354,17 @@ def compute_component_positions(parsed_data: dict, phase_mode: str = None, start
     positions: dict[str, tuple[float, float]] = {}
     
     # 1. Place the main vertical column (L spine)
-    for i, cid in enumerate(main_column):
-        positions[cid] = (0.0, start_y - i * H_STEP)
+    supply_cids = [cid.lower() for cid, _ in components if get_base_type(cid.lower()) == "supply"]
+    if len(supply_cids) > 1:
+        # Dual supplies placed side-by-side at x = -35.0 and x = +35.0 above ATS
+        positions[supply_cids[0]] = (-35.0, start_y)
+        positions[supply_cids[1]] = (35.0, start_y)
+        main_column = [c for c in main_column if c not in supply_cids]
+        for i, cid in enumerate(main_column):
+            positions[cid] = (0.0, start_y - (i + 1) * H_STEP)
+    else:
+        for i, cid in enumerate(main_column):
+            positions[cid] = (0.0, start_y - i * H_STEP)
         
     # Get the busbar Y coordinate (or fallback if no busbar)
     bus_y = positions.get("bus", (0.0, start_y - len(main_column) * H_STEP))[1]
@@ -853,7 +862,7 @@ def validate_netlist(netlist: dict) -> tuple[bool, list[str]]:
                     peer_comp, peer_pin = next_key.split(".", 1)
                     comp_type = get_base_type(peer_comp)
                     
-                    if comp_type in ["maincb", "rcd", "rcbo", "nbar", "ebar", "outcb"]:
+                    if comp_type not in ["supply", "bus", "loads"]:
                         # Auto-propagate L_in <-> L_out, N_in <-> N_out, E_in <-> E_out
                         peer_suffix = "_out" if peer_pin.endswith("_in") else "_in"
                         peer_base = peer_pin.split("_")[0]

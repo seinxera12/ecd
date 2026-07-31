@@ -176,6 +176,15 @@ class Sidebar(QWidget):
         self.reset_btn.setEnabled(False)
         content_lay.addWidget(self.reset_btn)
 
+        self.settings_btn = QPushButton("⚙  Settings")
+        self.settings_btn.setStyleSheet("""
+            QPushButton {background:#4a5568;color:#fff;border:none;border-radius:6px;
+                         padding:8px;font-size:12px;margin-top:4px;}
+            QPushButton:hover {background:#2d3748;}
+        """)
+        self.settings_btn.clicked.connect(self._open_settings)
+        content_lay.addWidget(self.settings_btn)
+
         content_lay.addStretch()
 
         hint = QLabel(
@@ -256,3 +265,7 @@ class Sidebar(QWidget):
     def _reset(self):
         if hasattr(self.main_window, 'canvas') and self.main_window.canvas:
             self.main_window.canvas.revert_to_original()
+
+    def _open_settings(self):
+        if hasattr(self.main_window, 'open_settings_page'):
+            self.main_window.open_settings_page()

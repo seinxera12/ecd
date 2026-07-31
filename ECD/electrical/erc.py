@@ -118,6 +118,9 @@ def run_erc(netlist: dict, parsed_data: dict) -> List[ERCFinding]:
         cid for cid in comp_ids
         if get_base_type(cid) == "supply" or components.get(cid, {}).get("type") == "supply"
     ]
+    has_ats = any(c.lower() == "ats" or "ats" in c.lower() or "transfer" in c.lower() for c in comp_ids)
+    has_supply2 = "supply_2" in comp_ids or any("generator" in c.lower() or "backup" in c.lower() for c in comp_ids)
+
     if len(supply_components) == 0:
         findings.append(ERCFinding(
             code="ERC-001",
@@ -125,11 +128,11 @@ def run_erc(netlist: dict, parsed_data: dict) -> List[ERCFinding]:
             message="No supply component found in diagram.",
             components=[]
         ))
-    elif len(supply_components) > 1:
+    elif len(supply_components) > 1 and not (has_ats or has_supply2):
         findings.append(ERCFinding(
             code="ERC-001",
             severity="ERROR",
-            message=f"Multiple supplies found ({len(supply_components)}) — only one supply per diagram is currently supported.",
+            message=f"Multiple supplies found ({len(supply_components)}) — ATS transfer switch required for dual supply.",
             components=supply_components
         ))
 
@@ -669,7 +672,7 @@ def run_erc(netlist: dict, parsed_data: dict) -> List[ERCFinding]:
         else:
             seen_exact_ids.add(cid_lower)
 
-        if base_t in {"supply", "maincb", "rcd", "bus", "nbar", "ebar", "loads"}:
+        if base_t in {"maincb", "rcd", "bus", "nbar", "ebar"} or (base_t == "supply" and not (has_ats or has_supply2)):
             if base_t in seen_singleton_base_types and seen_singleton_base_types[base_t] != cid_lower:
                 prev_id = seen_singleton_base_types[base_t]
                 findings.append(ERCFinding(

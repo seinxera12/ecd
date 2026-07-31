@@ -1584,11 +1584,32 @@ class DiagramCanvas(QWidget):
 
         try:
             def _to_tuple(c):
+                cid, lbl = "", ""
                 if isinstance(c, dict):
-                    return (c.get("id", ""), c.get("label", ""))
-                if isinstance(c, (list, tuple)) and len(c) >= 2:
-                    return (c[0], c[1])
-                return (str(c), str(c))
+                    cid, lbl = c.get("id", ""), c.get("label", "")
+                elif isinstance(c, (list, tuple)) and len(c) >= 2:
+                    cid, lbl = c[0], c[1]
+                else:
+                    cid, lbl = str(c), str(c)
+
+                # Sanitize non-canonical component IDs from LLMs (e.g. outcb_N_1 -> outcb_1, loads-1 -> loads_1)
+                s_cid = str(cid).strip()
+                match_out = re.search(r'outcb[_\-\s]*(?:n[_\-\s]*)?(\d+)', s_cid, re.IGNORECASE)
+                if match_out:
+                    s_cid = f"outcb_{match_out.group(1)}"
+                else:
+                    match_load = re.search(r'loads?[_\-\s]*(\d+)', s_cid, re.IGNORECASE)
+                    if match_load:
+                        s_cid = f"loads_{match_load.group(1)}"
+
+                # Re-map supply mislabels (e.g. Generator Backup / Solar / Grid 2 mis-tagged as generator or loads)
+                s_cid_lower = s_cid.lower()
+                s_lbl_lower = str(lbl).lower()
+                if any(kw in s_cid_lower or kw in s_lbl_lower for kw in ["generator", "gen-", "gen ", "backup supply", "secondary supply", "pv inverter", "solar supply", "grid_2"]):
+                    if s_cid_lower not in ("supply", "supply_1"):
+                        s_cid = "supply_2"
+
+                return (s_cid, lbl)
 
             parsed_data["components"] = [_to_tuple(c) for c in parsed_data.get("components", [])]
             comp_ids = [c for c, _ in parsed_data["components"]]
@@ -1664,7 +1685,7 @@ class DiagramCanvas(QWidget):
 
             parsed_data["components"] = [
                 (c, l) for c, l in parsed_data["components"]
-                if (c in allowed_ids or get_base_type(c) == "supply" or (allow_outcb and get_base_type(c) == "outcb") or prompt_mentions(c))
+                if (c in allowed_ids or get_base_type(c) == "supply" or (allow_outcb and get_base_type(c) == "outcb") or get_base_type(c) not in {"supply", "maincb", "rcd", "rcbo", "bus", "nbar", "ebar", "loads", "outcb"} or prompt_mentions(c))
                 and not is_explicitly_excluded(c)
             ]
 
@@ -1677,10 +1698,38 @@ class DiagramCanvas(QWidget):
                         if not is_explicitly_excluded(cid):
                             parsed_data["components"].append((cid, lbl))
 
-            if complexity_level == "Detailed":
-                if not any(get_base_type(c) == "outcb" for c, _ in parsed_data["components"]):
-                    generic_label = self.generator.components_map["outgoing mcbs"][lang]
-                    parsed_data["components"].insert(-1, ("outcb_1", generic_label))
+            # Fallback: If no branch breakers (outcb_1..N) exist, but the prompt requested multiple circuits/loads, extract them from prompt
+            has_outcb = any(get_base_type(c) == "outcb" for c, _ in parsed_data["components"])
+            if not has_outcb:
+                def _extract_circuits(txt: str) -> list[str]:
+                    found = []
+                    clean_p = re.sub(r'\b\d+\s*(?:a|amp|amps|ma|v|kv|kw|hp|w)\b', '', txt, flags=re.IGNORECASE)
+                    matches = re.findall(r'\b(\d{1,2})\s*([a-zA-Z\s]+)?\s*(?:circuits?|loads?|breakers?|branches?|lamps?|lights?|sockets?|motors?|pumps?)', clean_p, re.IGNORECASE)
+                    if matches:
+                        for qty_str, name in matches:
+                            try: qty = int(qty_str)
+                            except ValueError: continue
+                            if qty > 20: continue
+                            clean_name = name.strip() if name else "Load"
+                            if clean_name.lower() in ("main", "supply", "total", "panel", "board"): continue
+                            for i in range(1, qty + 1):
+                                found.append(f"{clean_name.capitalize()} {i}")
+                    return found
+
+                extracted_circuits = _extract_circuits(prompt_text)
+                if extracted_circuits:
+                    new_comps = []
+                    replaced_loads = False
+                    for cid, lbl in parsed_data["components"]:
+                        if get_base_type(cid) == "loads":
+                            if not replaced_loads:
+                                for i, c_name in enumerate(extracted_circuits, 1):
+                                    new_comps.append((f"outcb_{i}", f"CB-{i} ({c_name})"))
+                                    new_comps.append((f"loads_{i}", c_name))
+                                replaced_loads = True
+                        else:
+                            new_comps.append((cid, lbl))
+                    parsed_data["components"] = new_comps
 
             # Force inclusion of nbar/ebar/bus based on flags and outgoing breakers (critical for correctness and validation)
             current_ids = {c for c, _ in parsed_data["components"]}
@@ -1694,6 +1743,15 @@ class DiagramCanvas(QWidget):
             if has_outcb and "bus" not in current_ids:
                 parsed_data["components"].append(("bus", self.generator.components_map["busbar"][lang]))
                 current_ids.add("bus")
+
+            # Final strict deduplication of component IDs to guarantee zero duplicate ID errors in ERC
+            seen_cids = set()
+            unique_comps = []
+            for cid, lbl in parsed_data["components"]:
+                if cid not in seen_cids:
+                    seen_cids.add(cid)
+                    unique_comps.append((cid, lbl))
+            parsed_data["components"] = unique_comps
 
             parsed_data["complexity"] = complexity_level
             parsed_data["prompt"]     = prompt_text
