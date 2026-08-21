@@ -19,6 +19,8 @@ MODEL_CONFIGS = {
     "Gemini (Limited)":                                 ("gemini", "gemini-3.5-flash"),
     "Mistral (Unlimited, Offline)":                     ("ollama", "mistral:7b-instruct"),
     "Qwen (Unlimited, Offline)":                        ("ollama", "qwen2.5:7b-instruct"),
+    "QFind (Custom Model)":                             ("qfind",  "qfind-chat"),
+    "qfind":                                            ("qfind",  "qfind-chat"),
 
     # Legacy aliases for backwards compatibility
     "Groq — Fast (Cloud)":                             ("groq",   "openai/gpt-oss-20b"),
@@ -62,6 +64,13 @@ def get_llm_client(model_choice: str | None = None):
         except ImportError:
             from gemini_client import GeminiClient
         return GeminiClient(model=model_name)
+
+    if backend == "qfind":
+        try:
+            from ECD.llm.qfind_client import QFindClient
+        except ImportError:
+            from qfind_client import QFindClient
+        return QFindClient(model=model_name)
 
     # Ollama backend
     try:

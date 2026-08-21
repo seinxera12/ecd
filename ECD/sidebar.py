@@ -126,6 +126,7 @@ class Sidebar(QWidget):
             "Gemini (Limited)",
             "Mistral (Unlimited, Offline)",
             "Qwen (Unlimited, Offline)",
+            "QFind (Custom Model)",
         ])
         self.model_combo.setCurrentText("Groq - Fast (Limited Daily Use)")
         self.model_combo.setStyleSheet("""
